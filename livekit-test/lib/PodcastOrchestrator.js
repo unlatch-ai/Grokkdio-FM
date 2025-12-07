@@ -32,7 +32,7 @@ export class PodcastOrchestrator {
     this.userInput = null;
     this.rl = null;
     this.newsInjector = new NewsInjector();
-    this.trendInjector = new TrendInjector({ autoIntervalMinutes: 15 });
+    this.trendInjector = new TrendInjector({ autoIntervalMinutes: 2 });
     this.textOverlay = null; // Will be initialized after localPlayer
     this.sharedHistory = []; // Shared conversation history between agents
     this.pendingTrendPrompt = null; // Trend prompt waiting to be injected
