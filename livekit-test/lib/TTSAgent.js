@@ -247,7 +247,7 @@ REMEMBER: EVERY response must have [emotion brackets] like the examples above!`;
         const audioBuffer = await this.tts.synthesize(response);
         const ttsTime = Date.now() - ttsStart;
         console.log(
-          `${this.config.color}⏱️  TTS: ${ttsTime}ms (${audioBuffer.length} bytes)${RESET_COLOR}`
+          `${this.config.color}⏱️  Generated TTS: ${ttsTime}ms (${audioBuffer.length} bytes)${RESET_COLOR}`
         );
 
         this.audioPlaying = true;
@@ -301,7 +301,258 @@ REMEMBER: EVERY response must have [emotion brackets] like the examples above!`;
     }
   }
 
-  async interrupt(orchestrator) {
+  // Speak using external shared history (prompt already contains context)
+  async speakWithHistory(prompt) {
+    this.isActive = true;
+    this.isSpeaking = true;
+    this.shouldPlayAudio = true;
+    this.wasInterrupted = false;
+
+    try {
+      // Build messages - use system prompt + external prompt (no internal history)
+      const messages = [
+        { role: "system", content: this.systemPrompt },
+        { role: "user", content: prompt },
+      ];
+
+      // Get LLM response
+      console.log(
+        `${this.config.color}💭 ${this.config.name} thinking...${RESET_COLOR}`
+      );
+
+      const startTime = Date.now();
+      const response = await this.llm.chat(messages);
+      const llmTime = Date.now() - startTime;
+
+      this.currentTranscript = response;
+      console.log(
+        `${this.config.color}${this.config.name}:${RESET_COLOR} ${response}`
+      );
+      console.log(`${this.config.color}⏱️  LLM: ${llmTime}ms${RESET_COLOR}`);
+
+      // Generate audio
+      if (this.shouldPlayAudio) {
+        console.log(`${this.config.color}🎵 Generating audio...${RESET_COLOR}`);
+        const ttsStart = Date.now();
+        const audioBuffer = await this.tts.synthesize(response);
+        const ttsTime = Date.now() - ttsStart;
+        console.log(
+          `${this.config.color}⏱️  Generated TTS: ${ttsTime}ms (${audioBuffer.length} bytes)${RESET_COLOR}`
+        );
+
+        this.audioPlaying = true;
+        this.emit("audio", audioBuffer);
+
+        // Calculate duration
+        const durationMs = (audioBuffer.length / (24000 * 2)) * 1000;
+
+        // Remove emotion brackets from subtitle text
+        let cleanText = response.replace(/\[.*?\]/g, "").trim();
+        cleanText = cleanText.toLowerCase();
+        cleanText = cleanText.charAt(0).toUpperCase() + cleanText.slice(1);
+
+        // Emit subtitle event
+        this.emit("subtitle", {
+          name: this.config.name,
+          text: cleanText,
+          duration: durationMs,
+        });
+
+        // Wait for audio to finish (or be interrupted)
+        await new Promise((resolve) => {
+          const checkInterval = setInterval(() => {
+            if (this.wasInterrupted || !this.shouldPlayAudio) {
+              clearInterval(checkInterval);
+              resolve();
+            }
+          }, 100);
+
+          setTimeout(() => {
+            clearInterval(checkInterval);
+            resolve();
+          }, durationMs);
+        });
+
+        this.audioPlaying = false;
+        this.emit("finished");
+      }
+
+      return response;
+    } catch (error) {
+      console.error(
+        `${this.config.color}❌ ${this.config.name} error:${RESET_COLOR}`,
+        error.message
+      );
+      throw error;
+    } finally {
+      this.isActive = false;
+      this.isSpeaking = false;
+    }
+  }
+
+  // Generate text response only (for pipelined conversation)
+  async generateResponse(prompt) {
+    this.isActive = true;
+    this.wasInterrupted = false;
+
+    const messages = [
+      { role: "system", content: this.systemPrompt },
+      { role: "user", content: prompt },
+    ];
+
+    console.log(
+      `${this.config.color}💭 ${this.config.name} thinking...${RESET_COLOR}`
+    );
+
+    const startTime = Date.now();
+    const response = await this.llm.chat(messages);
+    const llmTime = Date.now() - startTime;
+
+    this.currentTranscript = response;
+    console.log(
+      `${this.config.color}${this.config.name}:${RESET_COLOR} ${response}`
+    );
+    console.log(`${this.config.color}⏱️  LLM: ${llmTime}ms${RESET_COLOR}`);
+
+    return response;
+  }
+
+  // Generate TTS and play audio for already-generated text (for pipelined conversation)
+  async playAudio(text) {
+    if (!text || this.wasInterrupted) return;
+
+    this.isSpeaking = true;
+    this.shouldPlayAudio = true;
+
+    try {
+      console.log(`${this.config.color}🎵 Generating audio...${RESET_COLOR}`);
+      const ttsStart = Date.now();
+      const audioBuffer = await this.tts.synthesize(text);
+      const ttsTime = Date.now() - ttsStart;
+      console.log(
+        `${this.config.color}⏱️  Generated TTS: ${ttsTime}ms (${audioBuffer.length} bytes)${RESET_COLOR}`
+      );
+
+      if (this.wasInterrupted) return;
+
+      const durationMs = (audioBuffer.length / (24000 * 2)) * 1000;
+      const playStartTime = Date.now();
+
+      console.log(
+        `${this.config.color}▶️  PLAY START: fresh audio (${
+          audioBuffer.length
+        } bytes, ${durationMs.toFixed(0)}ms duration)${RESET_COLOR}`
+      );
+
+      this.audioPlaying = true;
+      this.emit("audio", audioBuffer);
+
+      // Subtitle - clean up emotion brackets
+      let cleanText = text.replace(/\[.*?\]/g, "").trim();
+      cleanText = cleanText.toLowerCase();
+      cleanText = cleanText.charAt(0).toUpperCase() + cleanText.slice(1);
+
+      this.emit("subtitle", {
+        name: this.config.name,
+        text: cleanText,
+        duration: durationMs,
+      });
+
+      // Wait for audio to finish (or be interrupted)
+      await new Promise((resolve) => {
+        const checkInterval = setInterval(() => {
+          if (this.wasInterrupted || !this.shouldPlayAudio) {
+            clearInterval(checkInterval);
+            resolve();
+          }
+        }, 100);
+
+        setTimeout(() => {
+          clearInterval(checkInterval);
+          resolve();
+        }, durationMs);
+      });
+
+      const playEndTime = Date.now();
+      console.log(
+        `${this.config.color}⏹️  PLAY END: actually waited ${
+          playEndTime - playStartTime
+        }ms${RESET_COLOR}`
+      );
+
+      this.audioPlaying = false;
+      this.emit("finished");
+    } finally {
+      this.isSpeaking = false;
+      this.isActive = false;
+    }
+  }
+
+  // Play pre-generated audio buffer (skips TTS entirely - for pipelined conversation)
+  async playPreGeneratedAudio(text, audioBuffer) {
+    if (!audioBuffer || this.wasInterrupted) return;
+
+    this.isSpeaking = true;
+    this.shouldPlayAudio = true;
+    this.currentTranscript = text;
+
+    try {
+      const durationMs = (audioBuffer.length / (24000 * 2)) * 1000;
+      const playStartTime = Date.now();
+
+      console.log(
+        `${this.config.color}▶️  PLAY START: pre-gen audio (${
+          audioBuffer.length
+        } bytes, ${durationMs.toFixed(0)}ms duration)${RESET_COLOR}`
+      );
+
+      if (this.wasInterrupted) return;
+
+      this.audioPlaying = true;
+      this.emit("audio", audioBuffer);
+
+      // Subtitle - clean up emotion brackets
+      let cleanText = text.replace(/\[.*?\]/g, "").trim();
+      cleanText = cleanText.toLowerCase();
+      cleanText = cleanText.charAt(0).toUpperCase() + cleanText.slice(1);
+
+      this.emit("subtitle", {
+        name: this.config.name,
+        text: cleanText,
+        duration: durationMs,
+      });
+
+      // Wait for audio to finish (or be interrupted)
+      await new Promise((resolve) => {
+        const checkInterval = setInterval(() => {
+          if (this.wasInterrupted || !this.shouldPlayAudio) {
+            clearInterval(checkInterval);
+            resolve();
+          }
+        }, 100);
+
+        setTimeout(() => {
+          clearInterval(checkInterval);
+          resolve();
+        }, durationMs);
+      });
+
+      const playEndTime = Date.now();
+      console.log(
+        `${this.config.color}⏹️  PLAY END: actually waited ${
+          playEndTime - playStartTime
+        }ms${RESET_COLOR}`
+      );
+
+      this.audioPlaying = false;
+      this.emit("finished");
+    } finally {
+      this.isSpeaking = false;
+      this.isActive = false;
+    }
+  }
+
+  async interrupt() {
     this.wasInterrupted = true;
     this.shouldPlayAudio = false;
     this.audioPlaying = false;

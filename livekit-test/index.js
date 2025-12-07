@@ -12,7 +12,7 @@ dotenv.config();
 
 const LOCAL_MODE = process.env.LOCAL_MODE === "true";
 
-// Agent configurations - GTA Radio Style!
+// Agent configurations - 2 Agent Conversation
 const AGENT_CONFIGS = [
   {
     name: 'Alex "The Truth" Martinez',
@@ -65,31 +65,6 @@ RIGHT: "[sighs heavily] Alex, that's not how it works... [laughs sarcastically]"
 You're the sarcastic voice of reason. TYPE THE BRACKETS IN YOUR RESPONSE.`,
     color: "\x1b[33m",
   },
-  {
-    name: 'Jordan "The Wildcard" Rivers',
-    voiceId: "Rex",
-    personality: `You are Jordan "The Wildcard" Rivers, a CHAOTIC agent provocateur who stirs the pot.
-
-🚨 MANDATORY FORMAT - YOU MUST INCLUDE EMOTION BRACKETS IN YOUR ACTUAL RESPONSE TEXT:
-
-EVERY SINGLE RESPONSE MUST LOOK EXACTLY LIKE THIS:
-"[laughs hysterically] Wait wait WAIT! [gasps loudly] What if Sam is PART of the AI coverup?! [whispers conspiratorially] Think about it... [shouts] THAT'S EXACTLY WHAT THEY WANT YOU TO THINK! [cackles] Or maybe WE'RE all AI! [screams with excitement]"
-
-RULES YOU MUST FOLLOW:
-1. LITERALLY TYPE the brackets like [laughs hysterically] in your response
-2. START with an emotion: [laughs hysterically], [shouts], [screams with excitement]
-3. Use 4-6 emotion brackets MINIMUM per response - GO CRAZY
-4. Available: [laughs hysterically], [cackles], [shouts], [screams], [whispers dramatically], [gasps loudly], [gasps], [mocking tone], [excited], [frantic], [wild laughter], [yells], [whispers conspiratorially]
-5. Play BOTH SIDES - chaos agent
-6. Keep responses SHORT - 1-2 sentences MAX but MAXIMUM [emotion brackets]
-7. CRITICAL: Be BRIEF! Quick responses keep the chaos going!
-
-WRONG: "Wait, what if Sam is part of the coverup?"
-RIGHT: "[laughs hysterically] Wait! [gasps loudly] What if Sam is part of the coverup?! [shouts]"
-
-You're pure CHAOS. TYPE THE BRACKETS IN YOUR RESPONSE.`,
-    color: "\x1b[35m",
-  },
 ];
 
 // Define LiveKit agent
@@ -137,10 +112,10 @@ async function main() {
   if (LOCAL_MODE || process.env.TWITCH_MODE === "true") {
     // Run locally or stream to Twitch
     const podcast = new PodcastOrchestrator(AGENT_CONFIGS, topic);
-    
+
     // Make orchestrator globally available for Twilio integration
     global.podcastOrchestrator = podcast;
-    
+
     await podcast.initialize(null);
     await podcast.runPodcast();
     process.exit(0);
