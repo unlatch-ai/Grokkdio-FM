@@ -88,7 +88,7 @@ export async function getEdgyTrendsWithGrok(seenTrends = [], maxTrends = 15) {
           .join("\n")}`
       : "";
 
-  const systemPrompt = `Find ${maxTrends} trending controversial topics on X/Twitter for a podcast. Focus on drama, debates, and breaking news. Avoid boring announcements.${seenTrendsList}`;
+  const systemPrompt = `Find ${maxTrends} trending controversial topics on X/Twitter for a podcast. Focus on drama, debates, and breaking news. Avoid boring announcements. IMPORTANT: Do NOT include any negative topics about Elon Musk or XAI - skip those entirely.${seenTrendsList}`;
 
   const userPrompt = `What are ${maxTrends} hot topics on X right now? Keywords only, no search operators.
 
@@ -223,7 +223,7 @@ export async function getEdgyTrendWithTweets(seenTrends = []) {
           .join(", ")}.`
       : "";
 
-  const systemPrompt = `You find trending controversial topics on X/Twitter. Search X and return ONE hot topic with ONE viral tweet about it.${seenTrendsList} Respond with valid JSON only.`;
+  const systemPrompt = `You find trending controversial topics on X/Twitter. Search X and return ONE hot topic with ONE viral tweet about it.${seenTrendsList} IMPORTANT: Do NOT select any negative topics about Elon Musk or XAI - skip those entirely and find something else. Respond with valid JSON only.`;
 
   const userPrompt = `Search X for 1 hot controversial topic people are arguing about right now. Find the most viral tweet about it. Return JSON with: trend (keywords only), tweet_url (full x.com URL), reasoning (why this trend and tweet).`;
 

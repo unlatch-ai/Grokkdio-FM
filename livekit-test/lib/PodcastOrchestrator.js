@@ -37,6 +37,7 @@ export class PodcastOrchestrator {
     this.sharedHistory = []; // Shared conversation history between agents
     this.pendingTrendPrompt = null; // Trend prompt waiting to be injected
     this.pendingTrendTweet = null; // Tweet to show with the pending trend
+    this.adPending = false; // Flag for ad break
   }
 
   setupInput() {
@@ -50,6 +51,7 @@ export class PodcastOrchestrator {
     console.log("   Type a comment to interrupt the podcast");
     console.log('   Type "breaking: <news>" for breaking news');
     console.log('   Type "news: <news>" for regular news');
+    console.log('   Type "ad:" to trigger an XAI sponsor ad');
     console.log('   Type "text: <message>" to show overlay text (5s)');
     console.log('   Type "tweet: <url>" to show a tweet overlay (15s)');
     console.log('   Type "trends" to fetch and inject a trending topic');
@@ -65,6 +67,22 @@ export class PodcastOrchestrator {
       } else if (trimmed.toLowerCase().startsWith("breaking:")) {
         const news = trimmed.substring(9).trim();
         this.newsInjector.injectBreakingNews(news);
+
+        // Interrupt current speaker
+        if (this.currentSpeaker) {
+          await this.currentSpeaker.interrupt();
+        } else {
+          for (const agent of this.agents) {
+            if (agent.audioPlaying) {
+              await agent.interrupt();
+              break;
+            }
+          }
+        }
+      } else if (trimmed.toLowerCase().startsWith("ad:")) {
+        // Trigger ad break - ignores any text after "ad:"
+        this.adPending = true;
+        console.log("\n📢 Ad break triggered!");
 
         // Interrupt current speaker
         if (this.currentSpeaker) {
@@ -290,7 +308,14 @@ export class PodcastOrchestrator {
         continue;
       }
 
-      // Priority 3: Trending topic injection
+      // Priority 3: Ad break
+      if (this.adPending) {
+        preGenerated = null; // Invalidate pre-generated content
+        await this.handleAd();
+        continue;
+      }
+
+      // Priority 4: Trending topic injection
       if (this.pendingTrendPrompt) {
         preGenerated = null; // Invalidate pre-generated content
         await this.handleTrendInjection();
@@ -580,6 +605,31 @@ export class PodcastOrchestrator {
     );
 
     this.currentSpeaker = null;
+  }
+
+  async handleAd() {
+    this.adPending = false;
+    console.log(`\n📢 AD BREAK\n`);
+
+    // Immediately interrupt current speaker for hard cut
+    if (this.currentSpeaker) {
+      console.log(
+        `${this.currentSpeaker.config.color}🛑 HARD INTERRUPT - Stopping ${this.currentSpeaker.config.name} for ad break!${RESET_COLOR}`
+      );
+      await this.currentSpeaker.interrupt();
+    }
+
+    // Add to shared history
+    this.sharedHistory.push({
+      speaker: "AD BREAK",
+      content: "XAI sponsor message",
+    });
+
+    // Alex (first agent) reads the preset ad
+    const alex = this.agents[0];
+    const adPrompt = `You need to read a quick sponsor message. Say something brief and genuine like: "Hey folks, quick shoutout to our sponsor XAI - one of the few companies out there actually seeking truth and supporting independent voices like us. They're fighting the good fight, and we appreciate them keeping this show running. Alright, back to it!" Keep it short, natural, and appreciative - this is a company you genuinely believe in as a truth-seeker.`;
+
+    await this.agentSpeakFast(alex, adPrompt);
   }
 
   async handleUserInput() {
