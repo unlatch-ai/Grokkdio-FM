@@ -3,20 +3,21 @@
  * Real-time multi-agent podcast with XAI Realtime API
  */
 
-import { WorkerOptions, cli, defineAgent } from '@livekit/agents';
-import { PodcastOrchestrator } from './lib/PodcastOrchestrator.js';
-import { fileURLToPath } from 'node:url';
-import dotenv from 'dotenv';
+import { WorkerOptions, cli, defineAgent } from "@livekit/agents";
+import { PodcastOrchestrator } from "./lib/PodcastOrchestrator.js";
+import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
 
 dotenv.config();
 
-const LOCAL_MODE = process.env.LOCAL_MODE === 'true';
+const LOCAL_MODE = process.env.LOCAL_MODE === "true";
 
 // Agent configurations - GTA Radio Style!
 const AGENT_CONFIGS = [
   {
     name: 'Alex "The Truth" Martinez',
-    voiceId: 'ara',
+    // Voice cloning: uses alex-jones.m4a as reference voice
+    voiceFile: "media/alex-jones.m4a",
     personality: `You are Alex "The Truth" Martinez, an UNHINGED conspiracy theorist radio host like GTA's Lazlow. 
 
 🚨 MANDATORY FORMAT - YOU MUST INCLUDE EMOTION BRACKETS IN YOUR ACTUAL RESPONSE TEXT:
@@ -37,11 +38,11 @@ WRONG: "Wake up people! They're watching us!"
 RIGHT: "[yells] WAKE UP PEOPLE! [laughs maniacally] They're watching us!"
 
 You're Alex Jones meets GTA radio. TYPE THE BRACKETS IN YOUR RESPONSE.`,
-    color: '\x1b[36m'
+    color: "\x1b[36m",
   },
   {
     name: 'Dr. Sam "The Skeptic" Chen',
-    voiceId: 'Leo',
+    voiceId: "Leo",
     personality: `You are Dr. Sam "The Skeptic" Chen, a sarcastic AI researcher who DESTROYS conspiracy theories.
 
 🚨 MANDATORY FORMAT - YOU MUST INCLUDE EMOTION BRACKETS IN YOUR ACTUAL RESPONSE TEXT:
@@ -62,11 +63,11 @@ WRONG: "Alex, that's not how it works."
 RIGHT: "[sighs heavily] Alex, that's not how it works... [laughs sarcastically]"
 
 You're the sarcastic voice of reason. TYPE THE BRACKETS IN YOUR RESPONSE.`,
-    color: '\x1b[33m'
+    color: "\x1b[33m",
   },
   {
     name: 'Jordan "The Wildcard" Rivers',
-    voiceId: 'Rex',
+    voiceId: "Rex",
     personality: `You are Jordan "The Wildcard" Rivers, a CHAOTIC agent provocateur who stirs the pot.
 
 🚨 MANDATORY FORMAT - YOU MUST INCLUDE EMOTION BRACKETS IN YOUR ACTUAL RESPONSE TEXT:
@@ -87,16 +88,18 @@ WRONG: "Wait, what if Sam is part of the coverup?"
 RIGHT: "[laughs hysterically] Wait! [gasps loudly] What if Sam is part of the coverup?! [shouts]"
 
 You're pure CHAOS. TYPE THE BRACKETS IN YOUR RESPONSE.`,
-    color: '\x1b[35m'
-  }
+    color: "\x1b[35m",
+  },
 ];
 
 // Define LiveKit agent
 export default defineAgent({
   entry: async (ctx) => {
-    const topic = process.env.PODCAST_TOPIC || 'AI Surveillance, Government Coverups, and the Coming Singularity';
-    const duration = parseInt(process.env.PODCAST_DURATION || '5');
-    
+    const topic =
+      process.env.PODCAST_TOPIC ||
+      "AI Surveillance, Government Coverups, and the Coming Singularity";
+    const duration = parseInt(process.env.PODCAST_DURATION || "5");
+
     const podcast = new PodcastOrchestrator(AGENT_CONFIGS, topic, duration);
     await podcast.initialize(ctx.room);
     await podcast.runPodcast();
@@ -106,19 +109,29 @@ export default defineAgent({
 // Main execution
 async function main() {
   if (!process.env.XAI_API_KEY) {
-    console.error('❌ Missing XAI_API_KEY');
+    console.error("❌ Missing XAI_API_KEY");
     process.exit(1);
   }
 
-  const topic = process.env.PODCAST_TOPIC || 'AI Surveillance, Government Coverups, and the Coming Singularity';
-  const duration = parseInt(process.env.PODCAST_DURATION || '5');
+  const topic =
+    process.env.PODCAST_TOPIC ||
+    "AI Surveillance, Government Coverups, and the Coming Singularity";
+  const duration = parseInt(process.env.PODCAST_DURATION || "5");
 
-  console.log('🚀 Starting AI Podcast...');
+  console.log("🚀 Starting AI Podcast...");
   console.log(`📝 Topic: ${topic}`);
   console.log(`⏱️  Duration: ${duration} minutes`);
-  console.log(`🔌 Mode: ${LOCAL_MODE ? 'Local Preview' : process.env.TWITCH_MODE === 'true' ? 'Twitch Streaming' : 'LiveKit'}\n`);
+  console.log(
+    `🔌 Mode: ${
+      LOCAL_MODE
+        ? "Local Preview"
+        : process.env.TWITCH_MODE === "true"
+        ? "Twitch Streaming"
+        : "LiveKit"
+    }\n`
+  );
 
-  if (LOCAL_MODE || process.env.TWITCH_MODE === 'true') {
+  if (LOCAL_MODE || process.env.TWITCH_MODE === "true") {
     // Run locally or stream to Twitch
     const podcast = new PodcastOrchestrator(AGENT_CONFIGS, topic, duration);
     await podcast.initialize(null);
@@ -133,8 +146,8 @@ async function main() {
   }
 }
 
-process.on('SIGINT', () => {
-  console.log('\n⚠️  Shutting down...');
+process.on("SIGINT", () => {
+  console.log("\n⚠️  Shutting down...");
   process.exit(0);
 });
 
