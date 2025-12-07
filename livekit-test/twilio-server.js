@@ -7,13 +7,15 @@ import express from 'express';
 import { WebSocketServer } from 'ws';
 import dotenv from 'dotenv';
 import { EventEmitter } from 'events';
+import { spawn } from 'child_process';
+import path from 'path';
 
 dotenv.config();
 
 // Voice Activity Detection parameters
-const VAD_THRESHOLD = 500; // RMS threshold for speech detection
+const VAD_THRESHOLD = 400; // RMS threshold for speech detection (lower = more sensitive)
 const SPEECH_START_FRAMES = 3; // Frames above threshold to start speech
-const SPEECH_END_FRAMES = 10; // Frames below threshold to end speech
+const SPEECH_END_FRAMES = 40; // Frames below threshold to end speech (~800ms pause allowed)
 const MIN_SPEECH_DURATION = 500; // Minimum speech duration in ms
 
 const app = express();
@@ -27,6 +29,10 @@ const callerEvents = new EventEmitter();
 
 // Track if we've sent initial audio
 let hasStartedStreaming = false;
+
+// Audio paths for call events
+const DIAL_IN_AUDIO = path.join(process.cwd(), 'media', 'dial_in.mp3');
+const HANG_UP_AUDIO = path.join(process.cwd(), 'media', 'hang_up.mp3');
 
 // Middleware
 app.use(express.urlencoded({ extended: false }));
@@ -143,6 +149,9 @@ wss.on('connection', (ws) => {
           const initialSilence = Buffer.alloc(960); // 20ms at 24kHz
           sendAudioToTwilioCalls(initialSilence);
           
+          // Play dial-in sound on stream
+          playAudioOnStream(DIAL_IN_AUDIO);
+          
           // Notify orchestrator about new caller
           if (global.podcastOrchestrator) {
             global.podcastOrchestrator.regularNews(
@@ -219,6 +228,9 @@ wss.on('connection', (ws) => {
             const connection = activeConnections.get(streamSid);
             const callerNumber = connection.callerNumber || 'Unknown';
             console.log(`📞 Caller ${callerNumber} disconnected`);
+            
+            // Play hang-up sound on stream
+            playAudioOnStream(HANG_UP_AUDIO);
             
             // Notify orchestrator about caller leaving
             if (global.podcastOrchestrator) {
@@ -597,6 +609,59 @@ async function transcribeWithRealtimeAPI(mulawBuffer) {
     console.error('Transcription error:', err.message);
     return null;
   }
+}
+
+/**
+ * Play an MP3 file on the stream (local preview + Twitch)
+ * Uses ffmpeg to decode MP3 to raw PCM (24kHz, 16-bit, mono)
+ * @param {string} audioPath - Path to the MP3 file
+ */
+function playAudioOnStream(audioPath) {
+  if (!global.podcastOrchestrator) {
+    console.warn('⚠️ Cannot play audio - orchestrator not ready');
+    return;
+  }
+
+  const { localPlayer, twitchStreamer } = global.podcastOrchestrator;
+  
+  if (!localPlayer && !twitchStreamer) {
+    console.warn('⚠️ Cannot play audio - no output available');
+    return;
+  }
+
+  console.log(`🔊 Playing: ${path.basename(audioPath)}`);
+
+  // Use ffmpeg to decode MP3 to raw PCM (24kHz, 16-bit, mono)
+  const ffmpeg = spawn('ffmpeg', [
+    '-i', audioPath,
+    '-f', 's16le',
+    '-ar', '24000',
+    '-ac', '1',
+    '-acodec', 'pcm_s16le',
+    'pipe:1'
+  ], {
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+
+  ffmpeg.stdout.on('data', (pcmData) => {
+    // Write to both outputs
+    if (localPlayer) {
+      localPlayer.writeAudio(pcmData);
+    }
+    if (twitchStreamer) {
+      twitchStreamer.writeAudio(pcmData);
+    }
+  });
+
+  ffmpeg.on('error', (err) => {
+    console.error('Error playing audio:', err.message);
+  });
+
+  ffmpeg.on('close', (code) => {
+    if (code === 0) {
+      console.log(`✅ Finished playing: ${path.basename(audioPath)}`);
+    }
+  });
 }
 
 /**
