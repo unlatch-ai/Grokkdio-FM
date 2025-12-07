@@ -171,10 +171,10 @@ export class PodcastOrchestrator {
         this.textOverlay.showTypingText(data.name, data.text, data.duration);
       });
       
-      // Add silence padding between speakers
+      // Add minimal silence padding between speakers (music will fill the rest)
       agent.on('finished', () => {
-        // Send 2 seconds of silence to keep stream alive during generation
-        const silenceBuffer = Buffer.alloc(96000); // 2000ms at 24kHz, 16-bit
+        // Send 200ms of silence for natural pause
+        const silenceBuffer = Buffer.alloc(9600); // 200ms at 24kHz, 16-bit
         if (this.localPlayer) {
           this.localPlayer.writeAudio(silenceBuffer);
         }
@@ -343,10 +343,10 @@ export class PodcastOrchestrator {
           }
         }
         
-        // If pre-generation isn't ready, add extra silence to prevent stream gaps
+        // If pre-generation isn't ready, add small pause (music fills the gap)
         if (!preGeneratedText || !preGeneratedAudio) {
-          console.log('⏳ Pre-generation not ready, adding silence buffer...');
-          const silenceBuffer = Buffer.alloc(96000); // 2000ms silence
+          console.log('⏳ Pre-generation not ready, adding brief pause...');
+          const silenceBuffer = Buffer.alloc(24000); // 500ms silence
           if (this.localPlayer) {
             this.localPlayer.writeAudio(silenceBuffer);
           }

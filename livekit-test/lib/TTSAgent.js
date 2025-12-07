@@ -124,15 +124,28 @@ REMEMBER: EVERY response must have [emotion brackets] like the examples above!`;
         }
       }
 
-      // Play pre-generated audio
+      // Play pre-generated audio in chunks
       if (this.shouldPlayAudio) {
         console.log(
           `${this.config.color}🔊 Playing pre-generated audio (${audioBuffer.length} bytes)${RESET_COLOR}`
         );
 
         this.audioPlaying = true;
+<<<<<<< HEAD
         this.emit("audio", audioBuffer);
 
+=======
+        
+        // Split into 100ms chunks to prevent buffer overflow
+        const chunkSize = 4800; // 100ms at 24kHz, 16-bit
+        for (let i = 0; i < audioBuffer.length; i += chunkSize) {
+          if (this.wasInterrupted || !this.shouldPlayAudio) break;
+          
+          const chunk = audioBuffer.slice(i, i + chunkSize);
+          this.emit('audio', chunk);
+        }
+        
+>>>>>>> main
         // Calculate duration
         const durationMs = (audioBuffer.length / (24000 * 2)) * 1000;
 
