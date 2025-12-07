@@ -136,9 +136,7 @@ export class LocalAudioPlayer extends EventEmitter {
 
       // Scale video, add image overlay, and add dynamic text overlay from file
       "-vf",
-      `scale=1280:720[base];movie=${this.imageOverlay.getOverlayPath()}:loop=0,format=rgba[ovl];[base][ovl]overlay=(W-w)/2:(H-h)/2:format=auto:shortest=0,drawtext=textfile=${
-        this.subtitleFile
-      }:reload=1:fontsize=32:fontcolor=white:x=(w-text_w)/2:y=h-100:box=1:boxcolor=black@0.7:boxborderw=10`,
+      `scale=1280:720[base];movie=${this.imageOverlay.getOverlayPath()}:loop=0,format=rgba[ovl];[base][ovl]overlay=(W-w)/2:(H-h)/2:format=auto:shortest=0,drawtext=textfile=${this.subtitleFile}:reload=1:fontsize=32:fontcolor=white:x=(w-text_w)/2:y=h-100:box=1:boxcolor=black@0.7:boxborderw=10`,
 
       // Video encoding
       "-c:v",
