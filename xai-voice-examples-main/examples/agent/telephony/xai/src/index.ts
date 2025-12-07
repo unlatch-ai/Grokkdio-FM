@@ -13,20 +13,30 @@ app.use(express.urlencoded({ extended: true })).use(express.json());
 // ========================================
 // Configuration
 // ========================================
-const XAI_API_KEY = process.env.XAI_API_KEY || "";
+const XAI_API_KEY = process.env.XAI_API_KEY;
 const API_URL = process.env.API_URL || "wss://api.x.ai/v1/realtime";
+
+if (!XAI_API_KEY) {
+  throw new Error("XAI_API_KEY environment variable is required");
+}
 
 // ========================================
 // Secure Event Logger (async, structured)
 // ========================================
 // NOTE: Use Winston or similar logging library in production
 // This is a simple structured logger replacement for the insecure file logging
-function logWebSocketEvent(callId: string, direction: 'SEND' | 'RECV', event: any) {
-  const eventCopy = typeof event === 'string' ? JSON.parse(event) : event;
+function logWebSocketEvent(
+  callId: string,
+  direction: "SEND" | "RECV",
+  event: any
+) {
+  const eventCopy = typeof event === "string" ? JSON.parse(event) : event;
 
   // Skip logging raw audio chunks
-  if (eventCopy.type === 'input_audio_buffer.append' ||
-    eventCopy.type === 'response.output_audio.delta') {
+  if (
+    eventCopy.type === "input_audio_buffer.append" ||
+    eventCopy.type === "response.output_audio.delta"
+  ) {
     return;
   }
 
@@ -42,7 +52,7 @@ function logWebSocketEvent(callId: string, direction: 'SEND' | 'RECV', event: an
 
 // Helper to generate cryptographically secure IDs
 function generateSecureId(prefix: string): string {
-  return `${prefix}_${crypto.randomBytes(16).toString('hex')}`;
+  return `${prefix}_${crypto.randomBytes(16).toString("hex")}`;
 }
 
 // ========================================
@@ -66,14 +76,14 @@ app.post("/twiml", async (req, res) => {
 
   try {
     // Generate a cryptographically secure call ID
-    const callId = generateSecureId('call');
+    const callId = generateSecureId("call");
     log.app.info(`[${callId}] Processing incoming call`);
 
     res.status(200);
     res.type("text/xml");
 
     // Extract domain from HOSTNAME (remove https:// if present)
-    const hostname = process.env.HOSTNAME!.replace(/^https?:\/\//, '');
+    const hostname = process.env.HOSTNAME!.replace(/^https?:\/\//, "");
     const streamUrl = `wss://${hostname}/media-stream/${callId}`;
     log.app.info(`[${callId}] Generated WebSocket URL: ${streamUrl}`);
     log.app.info(`[${callId}] Using HOSTNAME: ${process.env.HOSTNAME}`);
@@ -122,18 +132,20 @@ app.ws("/media-stream/:callId", async (ws, req) => {
   // Set up Twilio start event handler IMMEDIATELY (before async operations)
   tw.on("start", (msg) => {
     tw.streamSid = msg.start.streamSid;
-    log.app.info(`[${callId}] Twilio WebSocket ready - streamSid: ${tw.streamSid}`);
+    log.app.info(
+      `[${callId}] Twilio WebSocket ready - streamSid: ${tw.streamSid}`
+    );
   });
 
   // Create raw WebSocket connection to x.ai (since RealtimeClient doesn't work)
   log.app.info(`[${callId}] Connecting to XAI API...`);
 
-  const WebSocket = require('ws');
+  const WebSocket = require("ws");
   const xaiWs = new WebSocket(API_URL, {
     headers: {
-      'Authorization': `Bearer ${XAI_API_KEY}`,
-      'Content-Type': 'application/json'
-    }
+      Authorization: `Bearer ${XAI_API_KEY}`,
+      "Content-Type": "application/json",
+    },
   });
 
   // Wait for x.ai WebSocket to be ready
@@ -143,14 +155,16 @@ app.ws("/media-stream/:callId", async (ws, req) => {
       reject(new Error("x.ai WebSocket connection timeout"));
     }, 10000);
 
-    xaiWs.on('open', () => {
+    xaiWs.on("open", () => {
       clearTimeout(wsTimeout);
       log.app.info(`[${callId}] x.ai WebSocket connected successfully`);
-      log.app.info(`[${callId}] x.ai WebSocket readyState: ${xaiWs.readyState}`);
+      log.app.info(
+        `[${callId}] x.ai WebSocket readyState: ${xaiWs.readyState}`
+      );
       resolve(null);
     });
 
-    xaiWs.on('error', (error: any) => {
+    xaiWs.on("error", (error: any) => {
       clearTimeout(wsTimeout);
       log.app.error(`[${callId}] ❌ x.ai WebSocket error:`, error);
       reject(error);
@@ -164,37 +178,42 @@ app.ws("/media-stream/:callId", async (ws, req) => {
   log.app.info(`[${callId}] 🎙️  Server-side VAD enabled`);
 
   // Handle messages from x.ai WebSocket
-  xaiWs.on('message', (data: Buffer) => {
+  xaiWs.on("message", (data: Buffer) => {
     try {
       const message = JSON.parse(data.toString());
 
       // Log to debug file (will filter out audio chunks)
-      logWebSocketEvent(callId, 'RECV', message);
+      logWebSocketEvent(callId, "RECV", message);
 
       // Log all events to console except raw audio chunks
-      if (message.type !== 'response.output_audio.delta' && message.type !== 'input_audio_buffer.append') {
+      if (
+        message.type !== "response.output_audio.delta" &&
+        message.type !== "input_audio_buffer.append"
+      ) {
         log.app.info(`[${callId}] 📩 ${message.type}`);
       }
 
-      if (message.type === 'response.output_audio.delta' && message.delta) {
+      if (message.type === "response.output_audio.delta" && message.delta) {
         // Bot is speaking - sending audio to Twilio (PCMU format)
         // XAI sends μ-law directly (native PCMU support), pass through without conversion
         tw.send({
           event: "media",
-          media: { payload: message.delta },  // Pass through base64 μ-law directly
+          media: { payload: message.delta }, // Pass through base64 μ-law directly
           streamSid: tw.streamSid!,
         });
-      } else if (message.type === 'response.output_audio_transcript.delta') {
+      } else if (message.type === "response.output_audio_transcript.delta") {
         // Log bot's speech transcript (PCMU format uses output_audio_transcript)
         log.app.info(`[${callId}] 🤖 Bot: "${message.delta}"`);
-      } else if (message.type === 'response.output_audio_transcript.delta') {
+      } else if (message.type === "response.output_audio_transcript.delta") {
         // Log bot's speech transcript
         log.app.info(`[${callId}] 🤖 Bot: "${message.delta}"`);
-      } else if (message.type === 'response.created') {
+      } else if (message.type === "response.created") {
         log.app.info(`[${callId}] 🤖 BOT STARTED SPEAKING`);
-      } else if (message.type === 'response.done') {
-        log.app.info(`[${callId}] 🤖 BOT FINISHED SPEAKING - Listening for user...`);
-      } else if (message.type === 'session.updated') {
+      } else if (message.type === "response.done") {
+        log.app.info(
+          `[${callId}] 🤖 BOT FINISHED SPEAKING - Listening for user...`
+        );
+      } else if (message.type === "session.updated") {
         log.app.info(`[${callId}] ⚙️ Session updated - PCMU format confirmed`);
 
         // Now that session is configured, send initial greeting
@@ -204,94 +223,121 @@ app.ws("/media-stream/:callId", async (ws, req) => {
         // xaiWs.send(JSON.stringify(commitMessage));
 
         const conversationItem = {
-          type: 'conversation.item.create',
+          type: "conversation.item.create",
           item: {
-            type: 'message',
-            role: 'user',
+            type: "message",
+            role: "user",
             content: [
               {
-                type: 'input_text',
-                text: 'Say hello and introduce yourself'
-              }
-            ]
-          }
+                type: "input_text",
+                text: "Say hello and introduce yourself",
+              },
+            ],
+          },
         };
-        logWebSocketEvent(callId, 'SEND', conversationItem);
+        logWebSocketEvent(callId, "SEND", conversationItem);
         xaiWs.send(JSON.stringify(conversationItem));
 
-        const responseCreate = { type: 'response.create' };
-        logWebSocketEvent(callId, 'SEND', responseCreate);
+        const responseCreate = { type: "response.create" };
+        logWebSocketEvent(callId, "SEND", responseCreate);
         xaiWs.send(JSON.stringify(responseCreate));
 
-        log.app.info(`[${callId}] Initial greeting requested after session confirmation`);
+        log.app.info(
+          `[${callId}] Initial greeting requested after session confirmation`
+        );
         // TODO: hmm this is not an OAI event
         // Also remove input_audio_buffer.received_forced_commit
-      } else if (message.type === 'conversation.created') {
+      } else if (message.type === "conversation.created") {
         log.app.info(`[${callId}] 📞 Call connected - Using SERVER-SIDE VAD`);
-        log.app.info(`[${callId}] 🆔 x.ai conversation_id: ${message.conversation?.id || 'unknown'}`);
+        log.app.info(
+          `[${callId}] 🆔 x.ai conversation_id: ${
+            message.conversation?.id || "unknown"
+          }`
+        );
 
         // Send session configuration
         const sessionConfig = {
-          type: 'session.update',
+          type: "session.update",
           session: {
             instructions: bot.instructions,
             // TODO: confirm that this is taken from here and not query param
-            voice: 'ara',
+            voice: "ara",
             audio: {
               input: {
                 format: {
-                  type: 'audio/pcmu',  // Native μ-law (PCMU) support
+                  type: "audio/pcmu", // Native μ-law (PCMU) support
                 },
               },
               output: {
                 format: {
-                  type: 'audio/pcmu',  // Native μ-law (PCMU) support
+                  type: "audio/pcmu", // Native μ-law (PCMU) support
                 },
               },
             },
             turn_detection: {
-              type: 'server_vad',
-            }
-          }
+              type: "server_vad",
+            },
+          },
         };
-        logWebSocketEvent(callId, 'SEND', sessionConfig);
+        logWebSocketEvent(callId, "SEND", sessionConfig);
         xaiWs.send(JSON.stringify(sessionConfig));
 
-        log.app.info(`[${callId}] Server-side VAD configured, waiting for session.updated...`);
-      } else if (message.type === 'input_audio_buffer.speech_started') {
+        log.app.info(
+          `[${callId}] Server-side VAD configured, waiting for session.updated...`
+        );
+      } else if (message.type === "input_audio_buffer.speech_started") {
         log.app.info(`[${callId}] 🎤 USER STARTED SPEAKING (server VAD)`);
-        log.app.info(`[${callId}]    VAD triggered at audio_start_ms: ${message.audio_start_ms}`);
+        log.app.info(
+          `[${callId}]    VAD triggered at audio_start_ms: ${message.audio_start_ms}`
+        );
 
         // Clear Twilio's audio buffer (interrupt bot if speaking)
         tw.send({ event: "clear", streamSid: tw.streamSid! });
-
-      } else if (message.type === 'input_audio_buffer.speech_stopped') {
-        log.app.info(`[${callId}] 🛑 USER STOPPED SPEAKING (server VAD detected ${message.audio_end_ms || message.audio_start_ms}ms of audio)`);
-        log.app.info(`[${callId}] 🔄 Server will automatically process speech...`);
-
-      } else if (message.type === 'input_audio_buffer.committed') {
-        log.app.info(`[${callId}] Audio buffer committed (${message.item_id || 'no item_id'})`);
-      } if (message.type === 'ping') {
+      } else if (message.type === "input_audio_buffer.speech_stopped") {
+        log.app.info(
+          `[${callId}] 🛑 USER STOPPED SPEAKING (server VAD detected ${
+            message.audio_end_ms || message.audio_start_ms
+          }ms of audio)`
+        );
+        log.app.info(
+          `[${callId}] 🔄 Server will automatically process speech...`
+        );
+      } else if (message.type === "input_audio_buffer.committed") {
+        log.app.info(
+          `[${callId}] Audio buffer committed (${
+            message.item_id || "no item_id"
+          })`
+        );
+      }
+      if (message.type === "ping") {
         // Silently handle pings
-      } else if (message.type === 'error') {
+      } else if (message.type === "error") {
         log.app.error(`[${callId}] ❌ x.ai API ERROR:`);
-        log.app.error(`[${callId}]    Type: ${message.error?.type || 'unknown'}`);
-        log.app.error(`[${callId}]    Code: ${message.error?.code || 'unknown'}`);
-        log.app.error(`[${callId}]    Message: ${message.error?.message || JSON.stringify(message)}`);
-        log.app.error(`[${callId}]    Event ID: ${message.event_id || 'none'}`);
-      } else if (message.type === 'conversation.item.added') {
+        log.app.error(
+          `[${callId}]    Type: ${message.error?.type || "unknown"}`
+        );
+        log.app.error(
+          `[${callId}]    Code: ${message.error?.code || "unknown"}`
+        );
+        log.app.error(
+          `[${callId}]    Message: ${
+            message.error?.message || JSON.stringify(message)
+          }`
+        );
+        log.app.error(`[${callId}]    Event ID: ${message.event_id || "none"}`);
+      } else if (message.type === "conversation.item.added") {
         // Silently handle - conversation item added (same as created)
-      } else if (message.type === 'response.output_item.added') {
+      } else if (message.type === "response.output_item.added") {
         // Silently handle - output item added to response
-      } else if (message.type === 'response.output_item.done') {
+      } else if (message.type === "response.output_item.done") {
         // Silently handle - output item completed
-      } else if (message.type === 'response.content_part.added') {
+      } else if (message.type === "response.content_part.added") {
         // Silently handle - content part added
-      } else if (message.type === 'response.content_part.done') {
+      } else if (message.type === "response.content_part.done") {
         // Silently handle - content part completed
-      } else if (message.type === 'response.output_audio.done') {
+      } else if (message.type === "response.output_audio.done") {
         // Silently handle - audio generation completed
-      } else if (message.type === 'response.output_audio_transcript.done') {
+      } else if (message.type === "response.output_audio_transcript.done") {
         // Silently handle - transcript completed
       } else {
         // Log unknown events for debugging
@@ -308,24 +354,28 @@ app.ws("/media-stream/:callId", async (ws, req) => {
     try {
       audioPacketCount++;
 
-      if (msg.media.track === 'inbound') {
+      if (msg.media.track === "inbound") {
         // XAI accepts μ-law (PCMU) natively - pass through without conversion
         const mulawBase64 = msg.media.payload;
 
         // Log periodically
         if (audioPacketCount === 1 || audioPacketCount % 100 === 0) {
-          log.app.info(`[${callId}] 🎚️  Audio packet #${audioPacketCount} (server-side VAD active)`);
+          log.app.info(
+            `[${callId}] 🎚️  Audio packet #${audioPacketCount} (server-side VAD active)`
+          );
         }
 
         // Send μ-law audio directly to XAI (no conversion or buffering needed)
         const audioMessage = {
           type: "input_audio_buffer.append",
-          audio: mulawBase64
+          audio: mulawBase64,
         };
 
         // Check WebSocket state before sending
         if (xaiWs.readyState !== 1) {
-          log.app.error(`[${callId}] ❌ Cannot send audio! x.ai WebSocket not connected (state: ${xaiWs.readyState})`);
+          log.app.error(
+            `[${callId}] ❌ Cannot send audio! x.ai WebSocket not connected (state: ${xaiWs.readyState})`
+          );
           return;
         }
 
@@ -338,13 +388,15 @@ app.ws("/media-stream/:callId", async (ws, req) => {
   });
 
   // Handle x.ai WebSocket errors
-  xaiWs.on('error', (error: any) => {
+  xaiWs.on("error", (error: any) => {
     log.app.error(`[${callId}] ❌ x.ai WebSocket ERROR:`, error);
   });
 
-  xaiWs.on('close', (code: number, reason: Buffer) => {
-    const reasonStr = reason.toString() || 'No reason provided';
-    log.app.error(`[${callId}] ❌ x.ai WebSocket CLOSED - Code: ${code}, Reason: ${reasonStr}`);
+  xaiWs.on("close", (code: number, reason: Buffer) => {
+    const reasonStr = reason.toString() || "No reason provided";
+    log.app.error(
+      `[${callId}] ❌ x.ai WebSocket CLOSED - Code: ${code}, Reason: ${reasonStr}`
+    );
   });
 
   // Handle Twilio WebSocket errors
