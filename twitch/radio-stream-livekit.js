@@ -109,8 +109,9 @@ async function startRadioStream() {
   console.log("✅ Connected to LiveKit room:", ROOM_NAME);
 
   // === 3. Create audio source and track ===
-  // Third parameter is queue size in ms - increase to handle burst of TTS audio
-  const audioSource = new AudioSource(TTS_SAMPLE_RATE, TTS_CHANNELS, 5000);
+  // Third parameter is queue size in ms (default 1000ms)
+  // We use 2000ms buffer - pacing logic will keep it under 500ms anyway
+  const audioSource = new AudioSource(TTS_SAMPLE_RATE, TTS_CHANNELS, 10000);
   const track = LocalAudioTrack.createAudioTrack("radio-audio", audioSource);
 
   const publishOptions = new TrackPublishOptions();
@@ -136,10 +137,25 @@ async function startRadioStream() {
 
   // === 5. Start XAI TTS loop ===
   let isShuttingDown = false;
+  let currentWs = null;
+  let nextSessionTimeout = null;
 
   process.on("SIGINT", async () => {
     console.log("\n🛑 Stopping AI Radio stream...");
     isShuttingDown = true;
+
+    // Clear any pending timeout
+    if (nextSessionTimeout) {
+      clearTimeout(nextSessionTimeout);
+      nextSessionTimeout = null;
+    }
+
+    // Close active WebSocket connection
+    if (currentWs) {
+      currentWs.close();
+      currentWs = null;
+    }
+
     await room.disconnect();
     process.exit(0);
   });
@@ -158,6 +174,7 @@ async function startRadioStream() {
     const ws = new WebSocket(wsUri, {
       headers: { Authorization: `Bearer ${XAI_API_KEY}` },
     });
+    currentWs = ws;
 
     ws.on("open", () => {
       console.log("✅ Connected to XAI streaming TTS");
@@ -185,6 +202,8 @@ async function startRadioStream() {
     });
 
     ws.on("message", async (data) => {
+      if (isShuttingDown) return;
+
       try {
         const message = JSON.parse(data.toString());
         const audioB64 = message?.data?.data?.audio;
@@ -192,33 +211,50 @@ async function startRadioStream() {
 
         if (!audioB64) return;
 
+        // Log queue status before processing
+        console.log(
+          "queuedDuration(s):",
+          audioSource.queuedDuration,
+          "queueSize(ms):",
+          audioSource.queueSize,
+          "closed:",
+          audioSource.closed
+        );
+
+        // Wait if queue is getting full (pace at message level, not frame level)
+        while (audioSource.queuedDuration > 5000 && !isShuttingDown) {
+          console.log("Waiting for queue to clear...");
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+        }
+
         // Convert base64 to buffer (16-bit PCM)
         const audioBuffer = Buffer.from(audioB64, "base64");
+        const totalSamples = audioBuffer.length / 2;
 
-        // === KEY DIFFERENCE: Push to LiveKit instead of ffmpeg ===
-        // IMPORTANT: Node.js Buffer uses pooling, so audioBuffer.buffer might be shared.
-        // We must copy to a fresh ArrayBuffer to avoid issues with LiveKit.
-        const arrayBuffer = new ArrayBuffer(audioBuffer.length);
-        const int16Data = new Int16Array(arrayBuffer);
-
-        // Copy data from Buffer to Int16Array
-        for (let i = 0; i < audioBuffer.length / 2; i++) {
+        // Create Int16Array and copy data from Buffer
+        // (Node.js Buffer uses pooling, so we must copy to a fresh ArrayBuffer)
+        const int16Data = new Int16Array(totalSamples);
+        for (let i = 0; i < totalSamples; i++) {
           int16Data[i] = audioBuffer.readInt16LE(i * 2);
         }
 
-        // Create proper AudioFrame instance (required by LiveKit SDK)
+        // Send the entire chunk as one frame - LiveKit handles internal buffering
         const frame = new AudioFrame(
           int16Data,
           TTS_SAMPLE_RATE,
           TTS_CHANNELS,
-          int16Data.length // samplesPerChannel (= length for mono)
+          totalSamples
         );
 
-        // Await to create proper backpressure
         await audioSource.captureFrame(frame);
 
+        const durationMs = (totalSamples / TTS_SAMPLE_RATE) * 1000;
+        console.log(
+          `🔊 Sent ${totalSamples} samples (${durationMs.toFixed(0)}ms)`
+        );
+
         if (isLast) {
-          console.log("🧩 Finished audio chunk set for this phrase.");
+          console.log("🧩 Finished audio for this phrase.");
           ws.close();
         }
       } catch (err) {
@@ -227,10 +263,12 @@ async function startRadioStream() {
     });
 
     ws.on("close", () => {
+      currentWs = null;
       if (isShuttingDown) return;
       console.log("🔁 TTS session closed. Scheduling next phrase...");
       // small pause between phrases
-      setTimeout(() => {
+      nextSessionTimeout = setTimeout(() => {
+        nextSessionTimeout = null;
         if (!isShuttingDown) startTtsSession();
       }, 200);
     });

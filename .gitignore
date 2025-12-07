@@ -1,2 +1,23 @@
 .DS_Store
 **/.DS_Store
+node_modules
+.env
+*.env
+.env.*
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+/dist
+/build
+coverage
+*.tsbuildinfo
+# Mac
+.DS_Store
+# VSCode
+.vscode
+# OS junk
+Thumbs.db
+# IDEs
+.idea
+*.swp
