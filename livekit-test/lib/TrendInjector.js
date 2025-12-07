@@ -25,6 +25,11 @@ export class TrendInjector extends EventEmitter {
     this.tweetQueue = [];
     this.autoTimer = null;
     this.startTime = Date.now();
+    
+    // Track trends to avoid repetition
+    this.observedTrends = new Set();   // All trends we've seen from API
+    this.discussedTrends = new Set();  // Trends we've already talked about
+    this.maxDiscussedHistory = 50;     // Reset after this many to allow repeats
   }
 
   /**
@@ -94,18 +99,36 @@ export class TrendInjector extends EventEmitter {
 
     try {
       // 1. Get top trends
-      const trends = await getTopTrends(15);
-      console.log(`📋 Found ${trends.length} trends:`);
+      const allTrends = await getTopTrends(15);
+      
+      // Track all observed trends
+      allTrends.forEach(t => this.observedTrends.add(t.trend_name));
+      
+      // Filter out already discussed trends
+      let trends = allTrends.filter(t => !this.discussedTrends.has(t.trend_name));
+      
+      // If all trends have been discussed, reset and allow repeats
+      if (trends.length === 0) {
+        console.log('🔄 All trends discussed, resetting history...');
+        this.discussedTrends.clear();
+        trends = allTrends;
+      }
+      
+      console.log(`📋 Found ${allTrends.length} trends (${trends.length} new):`);
       trends.slice(0, 5).forEach((t, i) => {
         const count = t.tweet_count ? ` (${t.tweet_count.toLocaleString()} tweets)` : '';
         console.log(`   ${i + 1}. ${t.trend_name}${count}`);
       });
 
-      // 2. Select best trend for personality via AI
+      // 2. Select best trend for personality via AI (from undiscussed trends only)
       console.log(`\n🤖 AI selecting trend for ${personality.name}...`);
       const { selectedTrend, reasoning } = await this._selectTrendForPersonality(trends);
       console.log(`✅ Selected: ${selectedTrend}`);
       console.log(`💭 Reasoning: ${reasoning}`);
+      
+      // Mark as discussed immediately
+      this.discussedTrends.add(selectedTrend);
+      console.log(`📝 Trends discussed so far: ${this.discussedTrends.size}`);
 
       // 3. Get tweets for the trend
       const tweets = await getTweetsForTrend(selectedTrend, 5);
@@ -167,9 +190,9 @@ export class TrendInjector extends EventEmitter {
       // Capture tweet as image
       const imagePath = await captureTweet(tweetUrl, { darkMode: true });
       
-      // Show on overlay
+      // Show on overlay for 1-2 minutes (90 seconds)
       await this.player.showImage(imagePath, {
-        duration: 12000,
+        duration: 90000,
         deleteAfter: true,
         position: 'bottom-left',
         width: 400,
@@ -377,7 +400,7 @@ React to this trending topic! Debate it, share your takes, and get heated about 
   }
 
   /**
-   * Clear the current trend
+   * Clear the current trend (keeps it in discussedTrends)
    */
   clearTrend() {
     this.currentTrend = null;
@@ -387,11 +410,41 @@ React to this trending topic! Debate it, share your takes, and get heated about 
   }
 
   /**
+   * Get stats about trend tracking
+   * @returns {Object} Stats about observed and discussed trends
+   */
+  getStats() {
+    return {
+      observed: this.observedTrends.size,
+      discussed: this.discussedTrends.size,
+      discussedList: Array.from(this.discussedTrends),
+    };
+  }
+
+  /**
+   * Check if a trend has already been discussed
+   * @param {string} trendName - Trend name to check
+   * @returns {boolean}
+   */
+  hasDiscussed(trendName) {
+    return this.discussedTrends.has(trendName);
+  }
+
+  /**
+   * Reset discussed trends history (allows repeats)
+   */
+  resetDiscussedHistory() {
+    console.log(`🔄 Resetting discussed trends history (was ${this.discussedTrends.size} trends)`);
+    this.discussedTrends.clear();
+  }
+
+  /**
    * Cleanup
    */
   cleanup() {
     this.stopAutoFetch();
     this.clearTrend();
+    // Note: We don't clear discussedTrends here so it persists
   }
 }
 

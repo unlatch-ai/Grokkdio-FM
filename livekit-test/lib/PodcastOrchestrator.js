@@ -32,7 +32,7 @@ export class PodcastOrchestrator {
     this.userInput = null;
     this.rl = null;
     this.newsInjector = new NewsInjector();
-    this.trendInjector = new TrendInjector({ autoIntervalMinutes: 5 });
+    this.trendInjector = new TrendInjector({ autoIntervalMinutes: 15 });
     this.textOverlay = null; // Will be initialized after localPlayer
     this.sharedHistory = []; // Shared conversation history between agents
     this.pendingTrendPrompt = null; // Trend prompt waiting to be injected
@@ -94,7 +94,7 @@ export class PodcastOrchestrator {
         // Get the active player
         const player = this.twitchStreamer || this.localPlayer;
         if (player) {
-          showTweetOverlay(player, tweetUrl, { duration: 15000 })
+          showTweetOverlay(player, tweetUrl, { duration: 90000 })
             .then(() => console.log('✅ Tweet overlay shown'))
             .catch(err => console.error('❌ Tweet error:', err.message));
         } else {
@@ -563,32 +563,44 @@ export class PodcastOrchestrator {
       content: prompt,
     });
 
-    // Show the first tweet on overlay
-    this.trendInjector.showNextTweet().catch(err => {
+    // Show the first tweet on overlay FIRST, then wait a moment before talking
+    console.log('📸 Displaying tweet first...');
+    try {
+      await this.trendInjector.showNextTweet();
+      // Small delay to let viewers see the tweet before talking starts
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    } catch (err) {
       console.error('Tweet overlay error:', err.message);
-    });
-
-    // Both agents react to the trend
-    for (let i = 0; i < this.agents.length; i++) {
-      const agent = this.agents[i];
-      
-      await this.agentSpeak(
-        agent,
-        i === 0 
-          ? `${prompt}\n\nYou just saw this trending! React to it first.`
-          : `${prompt}\n\nYour co-host just reacted. Now it's your turn - agree or argue!`
-      );
-
-      // Show next tweet while second agent speaks
-      if (i === 0 && this.trendInjector.tweetQueue.length > 0) {
-        this.trendInjector.showNextTweet().catch(() => {});
-      }
-
-      // Check for higher priority interrupts
-      if (this.newsInjector.hasBreakingNews() || this.userInput) break;
     }
 
-    // Clear the trend after discussion
+    // First agent reacts to the trend
+    const firstAgent = this.agents[0];
+    await this.agentSpeak(
+      firstAgent,
+      `${prompt}\n\nYou just saw this tweet trending! React to it - what's your take?`
+    );
+
+    // Check for interrupts
+    if (this.newsInjector.hasBreakingNews() || this.userInput) {
+      this.trendInjector.clearTrend();
+      return;
+    }
+
+    // Show next tweet before second agent speaks
+    if (this.trendInjector.tweetQueue.length > 0) {
+      console.log('📸 Showing next tweet...');
+      this.trendInjector.showNextTweet().catch(() => {});
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    // Second agent responds
+    const secondAgent = this.agents[1];
+    await this.agentSpeak(
+      secondAgent,
+      `${prompt}\n\nYour co-host just gave their take. Now respond - agree, argue, or add your own conspiracy/explanation!`
+    );
+
+    // Clear the trend after discussion (keeps it in discussedTrends)
     this.trendInjector.clearTrend();
   }
 

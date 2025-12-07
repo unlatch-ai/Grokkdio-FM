@@ -220,7 +220,7 @@ Pick the trend that would create the BEST debate between them! Look for:
 - Anything viral or shocking
 
 The best trends are ones where Alex can spin a wild conspiracy theory
-and Sam can sarcastically tear it apart with facts.`,
+and Sam can tear it apart with facts.`,
     researchPrompt: `You are researching for a comedy podcast with a conspiracy theorist and a skeptic scientist.
 
 Find information that would fuel a hilarious debate:
