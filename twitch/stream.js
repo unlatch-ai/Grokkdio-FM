@@ -3,6 +3,8 @@
 
 const { spawn } = require('child_process');
 const fs = require('fs');
+const path = require('path');
+const { ensureHelloAudioFile } = require('./xaiHelloAudio');
 
 // === CONFIGURATION ===
 const TWITCH_STREAM_KEY = ''; // Get from https://dashboard.twitch.tv/settings/stream
@@ -15,25 +17,18 @@ const FREQUENCY = 440; // A4 note (Hz)
 
 // === GENERATE TEST AUDIO ===
 // Creates a simple sine wave tone
-function generateTone() {
-  const bufferSize = SAMPLE_RATE * CHANNELS * 2; // 1 second of 16-bit PCM
-  const buffer = Buffer.alloc(bufferSize);
-  
-  for (let i = 0; i < SAMPLE_RATE; i++) {
-    const sample = Math.sin(2 * Math.PI * FREQUENCY * i / SAMPLE_RATE);
-    const value = Math.round(sample * 32767); // 16-bit signed
-    
-    // Write stereo (same value for left and right)
-    buffer.writeInt16LE(value, i * 4);
-    buffer.writeInt16LE(value, i * 4 + 2);
-  }
-  
-  return buffer;
-}
 
 // === START STREAMING ===
-function startStream() {
+async function startStream() {
   console.log('Starting Twitch stream...');
+
+  let audioPath;
+  try {
+    audioPath = await ensureHelloAudioFile();
+  } catch (err) {
+    console.error('Failed to prepare XAI hello world audio:', err.message || err);
+    process.exit(1);
+  }
   
   // Check if image exists, create a simple one if not
   const imagePath = 'cover.png';
@@ -43,11 +38,9 @@ function startStream() {
   
   // ffmpeg command for streaming
   const ffmpegArgs = [
-    // Audio input: raw PCM from stdin
-    '-f', 's16le',           // Format: signed 16-bit little-endian
-    '-ar', SAMPLE_RATE.toString(),
-    '-ac', CHANNELS.toString(),
-    '-i', 'pipe:0',          // Read from stdin
+    // Audio input: loop XAI generated hello world MP3
+    '-stream_loop', '-1',
+    '-i', audioPath,
     
     // Video input: static image or test pattern
     ...(fs.existsSync(imagePath) 
@@ -79,7 +72,7 @@ function startStream() {
   ];
   
   const ffmpeg = spawn('ffmpeg', ffmpegArgs, {
-    stdio: ['pipe', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe']
   });
   
   // Log ffmpeg output
@@ -96,31 +89,10 @@ function startStream() {
     console.log(`Stream ended with code ${code}`);
   });
   
-  // Generate and stream audio continuously
-  let isStreaming = true;
-  const toneBuffer = generateTone();
-  
-  function streamAudio() {
-    if (!isStreaming) return;
-    
-    ffmpeg.stdin.write(toneBuffer, (err) => {
-      if (err) {
-        console.error('Error writing audio:', err.message);
-        isStreaming = false;
-        return;
-      }
-      // Schedule next write immediately for continuous audio
-      setImmediate(streamAudio);
-    });
-  }
-  
-  streamAudio();
-  
   // Graceful shutdown
   process.on('SIGINT', () => {
     console.log('\nStopping stream...');
-    isStreaming = false;
-    ffmpeg.stdin.end();
+    ffmpeg.kill('SIGINT');
     setTimeout(() => process.exit(0), 1000);
   });
   
@@ -128,7 +100,7 @@ function startStream() {
 ✅ Stream started!
 📺 Check your stream at: https://twitch.tv/YOUR_USERNAME
 ⚠️  Stream may take 10-30 seconds to appear
-🎵 You should hear a 440Hz tone (A4 note)
+🎵 You should hear an XAI generated "hello world" message
 Press Ctrl+C to stop
   `);
 }
