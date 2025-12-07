@@ -3,20 +3,19 @@
 // Twitch AI Radio Stream
 // Streams a static image + live, randomly generated XAI TTS audio to Twitch via RTMP
 
+require("dotenv").config();
+
 const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const WebSocket = require("ws");
 
 // === CONFIGURATION ===
-// You can keep this hardcoded for now like stream.js, or switch to process.env later.
-const TWITCH_STREAM_KEY = "";
+const TWITCH_STREAM_KEY = process.env.TWITCH_STREAM_KEY;
 const TWITCH_RTMP_URL = "rtmp://live.twitch.tv/app/";
 
 // XAI realtime TTS (streaming) config
-const XAI_API_KEY =
-  process.env.XAI_API_KEY ||
-  "xai-IW4Fu0ALlntMlBWfD0nJZkaahbHkHOm2Ar6o75MB7Nw9CpwfouEBZtsWM8NTtqnNv7ICOhE850nWU4sz";
+const XAI_API_KEY = process.env.XAI_API_KEY;
 const BASE_URL = process.env.BASE_URL || "https://api.x.ai/v1";
 
 // Streaming TTS audio format (matches examples/tts/nodejs/streaming-tts.ts)

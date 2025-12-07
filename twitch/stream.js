@@ -1,17 +1,16 @@
 // Twitch Hello World Stream
 // Streams a static image with audio tone to Twitch via RTMP
 
+require("dotenv").config();
+
 const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const { ensureHelloAudioFile } = require("./xaiHelloAudio");
 
 // === CONFIGURATION ===
-const TWITCH_STREAM_KEY = "live_1402635713_BIXAtRNfxnesBKRrRwe3HbQyoJ2DYo"; // Get from https://dashboard.twitch.tv/settings/stream
+const TWITCH_STREAM_KEY = process.env.TWITCH_STREAM_KEY;
 const TWITCH_RTMP_URL = "rtmp://live.twitch.tv/app/";
-const XAI_API_KEY =
-  "xai-IW4Fu0ALlntMlBWfD0nJZkaahbHkHOm2Ar6o75MB7Nw9CpwfouEBZtsWM8NTtqnNv7ICOhE850nWU4sz";
-
 // Audio settings
 const SAMPLE_RATE = 48000; // Twitch prefers 48kHz
 const CHANNELS = 2; // Stereo
@@ -127,14 +126,14 @@ Press Ctrl+C to stop
 }
 
 // === MAIN ===
-if (TWITCH_STREAM_KEY === "your_stream_key_here") {
+if (!TWITCH_STREAM_KEY) {
   console.error(`
 ❌ ERROR: Please set your Twitch stream key!
 
 Steps to get your stream key:
 1. Go to https://dashboard.twitch.tv/settings/stream
 2. Copy your "Primary Stream Key"
-3. Replace 'your_stream_key_here' in this file
+3. Add TWITCH_STREAM_KEY to your .env file
 4. Run again: node stream.js
 
 ⚠️  Keep your stream key SECRET - don't commit it to git!

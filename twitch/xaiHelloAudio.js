@@ -1,5 +1,7 @@
 "use strict";
 
+require("dotenv").config();
+
 const fs = require("fs");
 const path = require("path");
 
@@ -8,13 +10,13 @@ const XAI_TTS_URL = `${XAI_API_BASE_URL}/audio/speech`;
 const XAI_CHAT_URL = `${XAI_API_BASE_URL}/chat/completions`;
 const HELLO_AUDIO_FILENAME = "hello-xai.mp3";
 
-const API_KEY = "";
+const API_KEY = process.env.XAI_API_KEY;
 
 // Twitter/X API configuration
 const TWITTER_API_BASE = "https://api.x.com/2";
 const TWITTER_TRENDS_URL = `${TWITTER_API_BASE}/trends/by/woeid/2487956`;
 const TWITTER_SEARCH_URL = `${TWITTER_API_BASE}/tweets/search/recent`;
-const TWITTER_BEARER_TOKEN = "";
+const TWITTER_BEARER_TOKEN = process.env.TWITTER_BEARER_TOKEN;
 
 async function fetchTwitterTrends() {
   console.log("Fetching Twitter trends...");
