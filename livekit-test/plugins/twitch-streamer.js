@@ -122,11 +122,12 @@ export class TwitchStreamer extends EventEmitter {
       "-thread_queue_size", "16",
       "-i", "pipe:3",
 
-      // Complex filter: audio mixing + video overlay
+      // Complex filter: audio mixing + video overlay + call-to-action text
+      // Flashy phone number in top-left corner with pulsing effect
       "-filter_complex",
       hasMusic
-        ? `[${musicIdx}:a]aresample=48000,volume=0.15[music];[${voiceIdx}:a]aresample=async=1:first_pts=0,volume=1.0[voice];[music][voice]amix=inputs=2:duration=first:dropout_transition=0[aout];[0:v]scale=1280:720[base];[${overlayIdx}:v]format=rgba[ovl];[base][ovl]overlay=(W-w)/2:(H-h)/2:eof_action=pass[vout]`
-        : `[${voiceIdx}:a]aresample=async=1:first_pts=0,volume=1.0[aout];[0:v]scale=1280:720[base];[${overlayIdx}:v]format=rgba[ovl];[base][ovl]overlay=(W-w)/2:(H-h)/2:eof_action=pass[vout]`,
+        ? `[${musicIdx}:a]aresample=48000,volume=0.15[music];[${voiceIdx}:a]aresample=async=1:first_pts=0,volume=1.0[voice];[music][voice]amix=inputs=2:duration=first:dropout_transition=0[aout];[0:v]scale=1280:720,drawtext=text='📞 CALL 415-649-9366 TO JOIN':fontsize=28:fontcolor=yellow@0.9:borderw=2:bordercolor=black:x=30:y=50:enable='gte(mod(t\\,2)\\,0)'[base];[${overlayIdx}:v]format=rgba[ovl];[base][ovl]overlay=(W-w)/2:(H-h)/2:eof_action=pass[vout]`
+        : `[${voiceIdx}:a]aresample=async=1:first_pts=0,volume=1.0[aout];[0:v]scale=1280:720,drawtext=text='📞 CALL 415-649-9366 TO JOIN':fontsize=28:fontcolor=yellow@0.9:borderw=2:bordercolor=black:x=30:y=50:enable='gte(mod(t\\,2)\\,0)'[base];[${overlayIdx}:v]format=rgba[ovl];[base][ovl]overlay=(W-w)/2:(H-h)/2:eof_action=pass[vout]`,
 
       "-map", "[vout]",
       "-map", "[aout]",
