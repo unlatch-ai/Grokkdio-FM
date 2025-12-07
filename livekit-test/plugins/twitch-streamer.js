@@ -3,10 +3,11 @@
  * Streams agent audio output to Twitch via RTMP
  */
 
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
 import { EventEmitter } from "events";
 import fs from "fs";
 import path from "path";
+import { ImageOverlayManager } from "../lib/ImageOverlayManager.js";
 
 export class TwitchStreamer extends EventEmitter {
   constructor(config = {}) {
@@ -36,6 +37,11 @@ export class TwitchStreamer extends EventEmitter {
     if (this.enableSubtitles) {
       fs.writeFileSync(this.subtitleFile, "", "utf8");
     }
+    
+    // Image overlay manager
+    this.imageOverlay = new ImageOverlayManager({
+      overlayFile: path.join(process.cwd(), "twitch-overlay.png"),
+    });
   }
 
   /**
@@ -80,6 +86,11 @@ export class TwitchStreamer extends EventEmitter {
       console.log(`⚠️  No background music found at: ${backgroundMusic}`);
     }
 
+    // Input indices: 0=video, 1=music(if exists), 2or1=voice, +1=overlay (via pipe:3)
+    const musicIdx = hasMusic ? 1 : -1;
+    const voiceIdx = hasMusic ? 2 : 1;
+    const overlayIdx = hasMusic ? 3 : 2;
+
     const ffmpegArgs = [
       // Video input: loop background video or fallback to static
       ...(useVideo
@@ -103,25 +114,22 @@ export class TwitchStreamer extends EventEmitter {
       "-i",
       "pipe:0",
 
-      // Audio mixing
-      ...(hasMusic
-        ? [
-            "-filter_complex",
-            `[${hasMusic ? "1" : "0"}:a]aresample=48000,volume=0.15[music];[${
-              hasMusic ? "2" : "1"
-            }:a]aresample=async=1:first_pts=0,volume=1.0[voice];[music][voice]amix=inputs=2:duration=first:dropout_transition=0[aout]`,
-            "-map",
-            "0:v:0",
-            "-map",
-            "[aout]",
-          ]
-        : ["-map", "0:v:0", "-map", `${hasMusic ? "2" : "1"}:a:0`]),
+      // Overlay input: raw RGBA frames via pipe:3 (fd 3)
+      "-f", "rawvideo",
+      "-pix_fmt", "rgba",
+      "-s", "1280x720",
+      "-r", "2", // 2 fps is enough for overlay updates
+      "-thread_queue_size", "16",
+      "-i", "pipe:3",
 
-      // Scale video and optionally add dynamic subtitle overlay from file
-      "-vf",
-      this.enableSubtitles
-        ? `scale=1280:720,drawtext=textfile=${this.subtitleFile}:reload=1:fontsize=32:fontcolor=white:x=(w-text_w)/2:y=h-100:box=1:boxcolor=black@0.7:boxborderw=10`
-        : `scale=1280:720`,
+      // Complex filter: audio mixing + video overlay
+      "-filter_complex",
+      hasMusic
+        ? `[${musicIdx}:a]aresample=48000,volume=0.15[music];[${voiceIdx}:a]aresample=async=1:first_pts=0,volume=1.0[voice];[music][voice]amix=inputs=2:duration=first:dropout_transition=0[aout];[0:v]scale=1280:720[base];[${overlayIdx}:v]format=rgba[ovl];[base][ovl]overlay=(W-w)/2:(H-h)/2:eof_action=pass[vout]`
+        : `[${voiceIdx}:a]aresample=async=1:first_pts=0,volume=1.0[aout];[0:v]scale=1280:720[base];[${overlayIdx}:v]format=rgba[ovl];[base][ovl]overlay=(W-w)/2:(H-h)/2:eof_action=pass[vout]`,
+
+      "-map", "[vout]",
+      "-map", "[aout]",
 
       // Video encoding
       "-c:v",
@@ -155,8 +163,19 @@ export class TwitchStreamer extends EventEmitter {
       `${this.rtmpUrl}${this.streamKey}`,
     ];
 
+    // Spawn with 4 stdio: stdin (audio), stdout, stderr, and fd3 (overlay frames)
     this.ffmpegProcess = spawn("ffmpeg", ffmpegArgs, {
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
+    });
+
+    // Get the overlay pipe (fd 3)
+    this.overlayPipe = this.ffmpegProcess.stdio[3];
+    
+    // Handle overlay pipe errors
+    this.overlayPipe.on("error", (err) => {
+      if (err.code !== "EPIPE" && !this._isRestarting) {
+        console.error("Overlay pipe error:", err.message);
+      }
     });
 
     // Handle stdin errors to prevent crashes - CRITICAL!
@@ -221,6 +240,9 @@ export class TwitchStreamer extends EventEmitter {
       }
     }, 500); // Every 500ms
 
+    // Start overlay frame pusher - sends RGBA frames at 2fps
+    this._startOverlayFramePusher();
+
     this.emit("started");
 
     console.log("✅ Twitch stream started");
@@ -231,6 +253,86 @@ export class TwitchStreamer extends EventEmitter {
       `📝 Subtitles: ${this.enableSubtitles ? "enabled" : "disabled"}`
     );
     console.log("📺 Check your stream at: https://twitch.tv/YOUR_USERNAME");
+  }
+
+  /**
+   * Start the overlay frame pusher - continuously sends RGBA frames to FFmpeg
+   * This allows dynamic overlay updates without restarting the stream
+   */
+  _startOverlayFramePusher() {
+    // Frame size: 1280x720 RGBA = 3,686,400 bytes
+    const FRAME_SIZE = 1280 * 720 * 4;
+    
+    // Create transparent frame (all zeros = transparent black)
+    this._transparentFrame = Buffer.alloc(FRAME_SIZE);
+    
+    // Current overlay frame (starts as transparent)
+    this._currentOverlayFrame = this._transparentFrame;
+    
+    // Push frames at 2fps (every 500ms)
+    this.overlayFrameInterval = setInterval(() => {
+      if (!this.isStreaming || !this.overlayPipe || this.overlayPipe.destroyed) {
+        return;
+      }
+      
+      try {
+        this.overlayPipe.write(this._currentOverlayFrame);
+      } catch (err) {
+        // Ignore write errors
+      }
+    }, 500);
+    
+    console.log("🖼️  Overlay frame pusher started (2 fps)");
+  }
+
+  /**
+   * Convert a PNG image to raw RGBA buffer
+   * @param {string} imagePath - Path to PNG file
+   * @param {object} options - Size and position options
+   * @returns {Buffer|null} Raw RGBA buffer or null on error
+   */
+  _pngToRgba(imagePath, options = {}) {
+    const {
+      width = 420,        // Overlay width (smaller than full screen)
+      position = 'bottom-left',  // 'top-left', 'top-right', 'bottom-left', 'bottom-right'
+      margin = 20,        // Margin from edge
+    } = options;
+
+    // Calculate position offsets
+    let x, y;
+    switch (position) {
+      case 'top-left':
+        x = margin;
+        y = margin;
+        break;
+      case 'top-right':
+        x = 1280 - width - margin;
+        y = margin;
+        break;
+      case 'bottom-right':
+        x = 1280 - width - margin;
+        y = `H-h-${margin}`;  // Will be calculated by ffmpeg
+        break;
+      case 'bottom-left':
+      default:
+        x = margin;
+        y = `H-h-${margin}`;
+        break;
+    }
+
+    try {
+      // Use ffmpeg to convert PNG to raw RGBA:
+      // 1. Scale to desired width (maintain aspect ratio)
+      // 2. Pad to 1280x720 with transparency, positioned in corner
+      const result = execSync(
+        `ffmpeg -y -i "${imagePath}" -vf "scale=${width}:-1,pad=1280:720:${x}:(720-ih-${margin}):color=0x00000000,format=rgba" -f rawvideo -pix_fmt rgba -`,
+        { encoding: 'buffer', maxBuffer: 10 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+      return result;
+    } catch (err) {
+      console.error("Error converting PNG to RGBA:", err.message);
+      return null;
+    }
   }
 
   /**
@@ -278,6 +380,72 @@ export class TwitchStreamer extends EventEmitter {
   }
 
   /**
+   * Show an image overlay - dynamically updates without stream restart
+   * @param {string} imagePath - Path to PNG image
+   * @param {object} options - Options
+   * @param {number} options.duration - Display duration in ms (default: 15000)
+   * @param {boolean} options.deleteAfter - Delete image after hiding (default: true)
+   * @param {number} options.width - Overlay width in px (default: 420)
+   * @param {string} options.position - 'top-left', 'top-right', 'bottom-left', 'bottom-right' (default: 'bottom-left')
+   * @param {number} options.margin - Margin from edge in px (default: 20)
+   */
+  async showImage(imagePath, options = {}) {
+    const { duration = 15000, deleteAfter = true, width, position, margin } = options;
+    
+    if (!this.isStreaming) {
+      console.warn("Cannot show overlay - not streaming");
+      return;
+    }
+
+    // Convert PNG to RGBA frame with position/size options
+    console.log(`🖼️  Loading overlay: ${path.basename(imagePath)}`);
+    const rgbaFrame = this._pngToRgba(imagePath, { width, position, margin });
+    
+    if (!rgbaFrame) {
+      console.error("Failed to load overlay image");
+      return;
+    }
+
+    // Update the current frame - frame pusher will send it
+    this._currentOverlayFrame = rgbaFrame;
+    console.log(`✅ Overlay active for ${duration / 1000}s`);
+    
+    // Schedule hiding after duration
+    if (this._overlayTimeout) {
+      clearTimeout(this._overlayTimeout);
+    }
+    
+    this._overlayTimeout = setTimeout(() => {
+      this.hideImage();
+      // Delete source if requested
+      if (deleteAfter && imagePath && fs.existsSync(imagePath)) {
+        try {
+          fs.unlinkSync(imagePath);
+          console.log(`🗑️  Deleted: ${path.basename(imagePath)}`);
+        } catch (err) {
+          // Ignore
+        }
+      }
+    }, duration);
+  }
+
+  /**
+   * Hide the current image overlay
+   */
+  hideImage() {
+    if (this._overlayTimeout) {
+      clearTimeout(this._overlayTimeout);
+      this._overlayTimeout = null;
+    }
+    
+    // Switch back to transparent frame
+    if (this._transparentFrame) {
+      this._currentOverlayFrame = this._transparentFrame;
+      console.log("🖼️  Overlay hidden");
+    }
+  }
+
+  /**
    * Write audio data to the stream
    * @param {Buffer} audioData - PCM audio buffer
    */
@@ -313,6 +481,18 @@ export class TwitchStreamer extends EventEmitter {
     if (this.keepAliveInterval) {
       clearInterval(this.keepAliveInterval);
       this.keepAliveInterval = null;
+    }
+
+    // Stop overlay frame pusher
+    if (this.overlayFrameInterval) {
+      clearInterval(this.overlayFrameInterval);
+      this.overlayFrameInterval = null;
+    }
+    
+    // Clear overlay timeout
+    if (this._overlayTimeout) {
+      clearTimeout(this._overlayTimeout);
+      this._overlayTimeout = null;
     }
 
     // Clean up subtitle file (only if subtitles were enabled)

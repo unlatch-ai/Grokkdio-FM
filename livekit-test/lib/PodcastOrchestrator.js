@@ -9,6 +9,7 @@ import { TwitchStreamer } from "../plugins/twitch-streamer.js";
 import { TTSAgent } from "./TTSAgent.js";
 import { NewsInjector } from "./NewsInjector.js";
 import { TextOverlayManager } from "./TextOverlay.js";
+import { showTweetOverlay } from "./TweetOverlay.js";
 import { audioBus } from "./AudioBus.js";
 import { sendAudioToTwilioCalls } from "../twilio-server.js";
 import readline from "readline";
@@ -46,6 +47,7 @@ export class PodcastOrchestrator {
     console.log('   Type "breaking: <news>" for breaking news');
     console.log('   Type "news: <news>" for regular news');
     console.log('   Type "text: <message>" to show overlay text (5s)');
+    console.log('   Type "tweet: <url>" to show a tweet overlay (15s)');
     console.log('   Type "quit" to exit\n');
 
     this.rl.on("line", async (input) => {
@@ -80,6 +82,19 @@ export class PodcastOrchestrator {
         // Also show on Twitch if streaming
         if (this.twitchStreamer) {
           this.twitchStreamer.showText(text, 5000);
+        }
+      } else if (trimmed.toLowerCase().startsWith("tweet:")) {
+        const tweetUrl = trimmed.substring(6).trim();
+        console.log(`\n📸 Capturing tweet: ${tweetUrl}`);
+        
+        // Get the active player
+        const player = this.twitchStreamer || this.localPlayer;
+        if (player) {
+          showTweetOverlay(player, tweetUrl, { duration: 15000 })
+            .then(() => console.log('✅ Tweet overlay shown'))
+            .catch(err => console.error('❌ Tweet error:', err.message));
+        } else {
+          console.log('⚠️  No video player active for overlay');
         }
       } else if (trimmed) {
         this.userInput = trimmed;

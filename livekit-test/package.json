@@ -9,7 +9,9 @@
     "dev": "LOCAL_MODE=true node --watch index.js",
     "twitch": "TWITCH_MODE=true node index.js",
     "twitch-twilio": "TWITCH_MODE=true TWILIO_ENABLED=true node index.js",
-    "livekit": "node index.js"
+    "livekit": "node index.js",
+    "test-overlay": "node test-overlay.js",
+    "test-overlay-twitch": "TWITCH_MODE=true node test-overlay.js"
   },
   "keywords": [
     "livekit",
@@ -27,6 +29,9 @@
     "dotenv": "^16.4.5",
     "express": "^4.22.1",
     "form-data": "^4.0.5",
+    "imagemin": "^9.0.1",
+    "imagemin-pngquant": "^10.0.0",
+    "puppeteer": "^24.32.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
