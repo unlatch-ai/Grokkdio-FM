@@ -8,7 +8,10 @@
 import { EventEmitter } from "events";
 import {
   getTopTrends,
+  getEdgyTrendsWithGrok,
+  getEdgyTrendWithTweets,
   getTweetsForTrend,
+  getTweetsWithGrok,
   getTweetUrl,
 } from "./TrendService.js";
 import { captureTweet } from "./gettweet.js";
@@ -26,6 +29,7 @@ export class TrendInjector extends EventEmitter {
     this.autoInterval = config.autoIntervalMinutes || 3;
     this.personality = config.personality || DEFAULT_PERSONALITY;
     this.minTweetCount = config.minTweetCount || 20000; // Minimum tweets for a trend to be considered
+    this.useGrokCombined = config.useGrokCombined ?? true; // Feature flag: true = get trend+tweets in one call
     this.player = null; // Set by PodcastOrchestrator
     this.isProcessing = false;
     this.currentTrend = null;
@@ -117,99 +121,162 @@ export class TrendInjector extends EventEmitter {
     );
 
     try {
-      // 1. Get top trends
-      const allTrends = await getTopTrends(15);
-      console.log("All trends:", allTrends);
+      let selectedTrend;
+      let tweets;
 
-      // Track all observed trends
-      allTrends.forEach((t) => this.observedTrends.add(t.trend_name));
+      let tweetUrl = null;
+      let reasoning = null;
 
-      // Filter out trends with low tweet count and already discussed trends
-      let trends = allTrends.filter(
-        (t) =>
-          (t.tweet_count || 0) >= this.minTweetCount &&
-          !this.discussedTrends.has(t.trend_name)
-      );
+      if (this.useGrokCombined) {
+        // COMBINED MODE: Get trend + tweet URL in one Grok call
+        console.log("🔥 Using combined Grok mode (trend + tweet in one call)");
 
-      // If all qualifying trends have been discussed, reset and allow repeats (but still filter by tweet count)
-      if (trends.length === 0) {
-        console.log("🔄 All qualifying trends discussed, resetting history...");
-        this.discussedTrends.clear();
-        trends = allTrends.filter(
-          (t) => (t.tweet_count || 0) >= this.minTweetCount
+        try {
+          const result = await getEdgyTrendWithTweets(this.discussedTrends);
+          selectedTrend = result.trend;
+          tweetUrl = result.tweetUrl;
+          reasoning = result.reasoning;
+          tweets = []; // No parsed tweets in combined mode
+
+          console.log(`✅ Grok found trend: "${selectedTrend}"`);
+          if (tweetUrl) {
+            console.log(`🐦 Tweet URL: ${tweetUrl}`);
+          }
+          if (reasoning) {
+            console.log(`💭 Reasoning: ${reasoning.substring(0, 100)}...`);
+          }
+        } catch (err) {
+          console.error(
+            `⚠️ Combined Grok failed: ${err.message}, falling back to separate calls`
+          );
+          // Fall back to separate calls
+          const allTrends = await getTopTrends(15);
+          const trend =
+            allTrends.find((t) => !this.discussedTrends.has(t.trend_name)) ||
+            allTrends[0];
+          selectedTrend = trend.trend_name;
+          tweets = await getTweetsForTrend(selectedTrend, 100);
+        }
+      } else {
+        // SEPARATE MODE: Get trends first, then tweets (original flow)
+        console.log("📊 Using separate mode (trends, then tweets)");
+
+        const allTrends = await getTopTrends(15);
+        console.log("All trends:", allTrends);
+
+        // Track all observed trends
+        allTrends.forEach((t) => this.observedTrends.add(t.trend_name));
+
+        // Filter out trends with low tweet count and already discussed trends
+        let trends = allTrends.filter(
+          (t) =>
+            (t.tweet_count || 0) >= this.minTweetCount &&
+            !this.discussedTrends.has(t.trend_name)
         );
-      }
 
-      // If still no trends qualify (all below minimum tweet count), skip this cycle
-      if (trends.length === 0) {
+        // If all qualifying trends have been discussed, reset and allow repeats
+        if (trends.length === 0) {
+          console.log(
+            "🔄 All qualifying trends discussed, resetting history..."
+          );
+          this.discussedTrends.clear();
+          trends = allTrends.filter(
+            (t) => (t.tweet_count || 0) >= this.minTweetCount
+          );
+        }
+
+        // If still no trends qualify, skip this cycle
+        if (trends.length === 0) {
+          console.log(
+            `⚠️ No trends meet minimum tweet count (${this.minTweetCount.toLocaleString()}), skipping...`
+          );
+          this.isProcessing = false;
+          return null;
+        }
+
+        const filteredByCount = allTrends.filter(
+          (t) => (t.tweet_count || 0) < this.minTweetCount
+        ).length;
         console.log(
-          `⚠️ No trends meet minimum tweet count (${this.minTweetCount.toLocaleString()}), skipping...`
+          `📋 Found ${allTrends.length} trends (${
+            trends.length
+          } qualifying, ${filteredByCount} filtered for <${this.minTweetCount.toLocaleString()} tweets):`
         );
-        this.isProcessing = false;
-        return null;
+        trends.slice(0, 5).forEach((t, i) => {
+          const count = t.tweet_count
+            ? ` (${t.tweet_count.toLocaleString()} tweets)`
+            : "";
+          console.log(`   ${i + 1}. ${t.trend_name}${count}`);
+        });
+
+        selectedTrend = trends[0].trend_name;
+        console.log(`✅ Using trend: ${selectedTrend}`);
+
+        // Get tweets for the trend
+        console.log(`🐦 Searching tweets for: "${selectedTrend}"...`);
+        tweets = await getTweetsForTrend(selectedTrend, 100);
+        console.log(`🐦 Found ${tweets.length} tweets`);
       }
 
-      const filteredByCount = allTrends.filter(
-        (t) => (t.tweet_count || 0) < this.minTweetCount
-      ).length;
-      console.log(
-        `📋 Found ${allTrends.length} trends (${
-          trends.length
-        } qualifying, ${filteredByCount} filtered for <${this.minTweetCount.toLocaleString()} tweets):`
-      );
-      trends.slice(0, 5).forEach((t, i) => {
-        const count = t.tweet_count
-          ? ` (${t.tweet_count.toLocaleString()} tweets)`
-          : "";
-        console.log(`   ${i + 1}. ${t.trend_name}${count}`);
-      });
-
-      // 2. Select best trend for personality via AI (from undiscussed trends only)
-      console.log(`\n🤖 AI selecting trend for ${personality.name}...`);
-      const { selectedTrend, reasoning } =
-        await this._selectTrendForPersonality(trends);
-      console.log(`✅ Selected: ${selectedTrend}`);
-      console.log(`💭 Reasoning: ${reasoning}`);
-
-      // Mark as discussed immediately
+      // Mark as discussed
       this.discussedTrends.add(selectedTrend);
+      this.observedTrends.add(selectedTrend);
       console.log(`📝 Trends discussed so far: ${this.discussedTrends.size}`);
 
-      // 3. Get tweets for the trend (fetch 200 to find the best ones)
-      const tweets = await getTweetsForTrend(selectedTrend, 1000);
-      console.log(`🐦 Found ${tweets.length} tweets`);
+      let topTweets = [];
+      let topTweet = null;
+      let research = "";
 
-      // 4. Select top tweets by views - top 3 for research, top 1 for display
-      const topTweets = this._selectTopTweets(tweets, 3);
-      const topTweet = topTweets[0] || null;
-      if (topTweet) {
-        const views = topTweet.public_metrics?.impression_count || 0;
-        console.log(
-          `👁️  Top tweet has ${views.toLocaleString()} views (using top ${
-            topTweets.length
-          } for research)`
-        );
+      if (this.useGrokCombined && tweetUrl) {
+        // COMBINED MODE: We have a direct tweet URL and reasoning from Grok
+        console.log(`🐦 Using tweet URL from Grok: ${tweetUrl}`);
+
+        // Use Grok's reasoning as research (it already explains the trend)
+        research = reasoning || "Trending topic selected by Grok";
+        console.log(`✨ Using Grok reasoning as research`);
+
+        // Store the URL directly (showTweet will use it)
+        this.currentTweetUrl = tweetUrl;
+      } else {
+        // SEPARATE MODE: Select top tweets and research
+        topTweets = this._selectTopTweets(tweets, 3);
+        topTweet = topTweets[0] || null;
+
+        if (topTweet) {
+          const views = topTweet.public_metrics?.impression_count || 0;
+          console.log(
+            `👁️  Top tweet: ${views.toLocaleString()} views, id=${topTweet.id}`
+          );
+          console.log(`   "${topTweet.text.substring(0, 80)}..."`);
+        } else {
+          console.warn(
+            `⚠️  No tweets found for trend "${selectedTrend}" - tweet overlay will be skipped`
+          );
+        }
+
+        // Research background with AI
+        console.log(`\n🔍 Researching background with ${personality.name}...`);
+        research = await this._researchTrend(selectedTrend, topTweets);
+        console.log(`✨ Research complete`);
+
+        this.currentTweetUrl = null;
       }
 
-      // 5. Research background with AI (using only top 3 tweets)
-      console.log(`\n🔍 Researching background with ${personality.name}...`);
-      const research = await this._researchTrend(selectedTrend, topTweets);
-      console.log(`✨ Research complete`);
-
-      // 6. Store for use (top tweets for research/prompt, top 1 for display)
+      // Store for use
       this.currentTrend = selectedTrend;
-      this.currentTweets = topTweets; // Store only top tweets for prompts
+      this.currentTweets = topTweets;
       this.currentResearch = research;
-      this.currentTweet = topTweet; // Single tweet to display
+      this.currentTweet = topTweet;
 
-      // 7. Build prompt for agents (includes research, uses top tweets)
+      // Build prompt for agents
       const prompt = this._buildTrendPrompt(selectedTrend, topTweets, research);
 
-      // 8. Emit event for PodcastOrchestrator to inject
+      // Emit event for PodcastOrchestrator to inject
       this.emit("trendReady", {
         trend: selectedTrend,
-        tweets: topTweets, // Only pass top tweets
-        tweet: topTweet, // Single tweet for display
+        tweets: topTweets,
+        tweet: topTweet,
+        tweetUrl: tweetUrl || null,
         research,
         prompt,
       });
@@ -219,6 +286,7 @@ export class TrendInjector extends EventEmitter {
         trend: selectedTrend,
         tweets: topTweets,
         tweet: topTweet,
+        tweetUrl: tweetUrl || null,
         research,
         prompt,
       };
@@ -236,25 +304,65 @@ export class TrendInjector extends EventEmitter {
    */
   async showTweet(tweet = null) {
     if (!this.player) {
-      console.warn("No player set for tweet overlay");
+      console.warn("⚠️  showTweet: No player set for tweet overlay");
       return false;
     }
 
     // Use provided tweet or fall back to currentTweet
     const tweetToShow = tweet || this.currentTweet;
 
+    // Check if we have a direct URL from Grok combined mode
+    if (!tweetToShow && this.currentTweetUrl) {
+      console.log(
+        `📸 Using direct tweet URL from Grok: ${this.currentTweetUrl}`
+      );
+
+      try {
+        // Capture tweet as image using the direct URL
+        const imagePath = await captureTweet(this.currentTweetUrl, {
+          darkMode: true,
+        });
+        console.log(`📸 Tweet captured: ${imagePath}`);
+
+        // Show on overlay for 1-2 minutes (90 seconds)
+        await this.player.showImage(imagePath, {
+          duration: 90000,
+          deleteAfter: true,
+          position: "bottom-left",
+          width: 400,
+        });
+
+        console.log(`✅ Tweet overlay displayed`);
+        return true;
+      } catch (err) {
+        console.error(`❌ Error showing tweet from URL: ${err.message}`);
+        return false;
+      }
+    }
+
     if (!tweetToShow) {
-      console.log("No tweet to show");
+      console.log(
+        "⚠️  showTweet: No tweet available to display (tweet search likely returned 0 results)"
+      );
+      return false;
+    }
+
+    if (!tweetToShow.id) {
+      console.error(
+        "⚠️  showTweet: Tweet object missing id field:",
+        tweetToShow
+      );
       return false;
     }
 
     const tweetUrl = getTweetUrl(tweetToShow.id, tweetToShow.author_id);
-
-    console.log(`\n📸 Showing tweet: ${tweetToShow.text.substring(0, 50)}...`);
+    console.log(`📸 Capturing tweet: ${tweetUrl}`);
+    console.log(`   Text: "${tweetToShow.text.substring(0, 60)}..."`);
 
     try {
       // Capture tweet as image
       const imagePath = await captureTweet(tweetUrl, { darkMode: true });
+      console.log(`📸 Tweet captured: ${imagePath}`);
 
       // Show on overlay for 1-2 minutes (90 seconds)
       await this.player.showImage(imagePath, {
@@ -264,9 +372,10 @@ export class TrendInjector extends EventEmitter {
         width: 400,
       });
 
+      console.log(`✅ Tweet overlay displayed`);
       return true;
     } catch (err) {
-      console.error("Error showing tweet:", err.message);
+      console.error(`❌ Error showing tweet: ${err.message}`);
       return false;
     }
   }
