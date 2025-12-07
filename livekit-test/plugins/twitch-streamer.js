@@ -79,18 +79,22 @@ export class TwitchStreamer extends EventEmitter {
         : ['-f', 'lavfi', '-i', 'color=c=#1a1a2e:s=1280x720:r=30']
       ),
       
-      // Audio input: raw PCM from stdin (podcast voices)
+      // Background music input (looped)
+      ...(hasMusic ? ['-stream_loop', '-1', '-i', backgroundMusic] : []),
+      
+      // Audio input: raw PCM from stdin (podcast voices) - NON-BLOCKING
       '-f', 's16le',
       '-ar', this.sampleRate.toString(),
       '-ac', this.channels.toString(),
+      '-thread_queue_size', '512',
       '-i', 'pipe:0',
 
-      // Background music input (optional, looped)
+      // Audio mixing
       ...(hasMusic
-        ? ['-stream_loop', '-1', '-i', backgroundMusic, '-filter_complex', 
-           '[1:a]aresample=async=1:first_pts=0,volume=1.0[voice];[2:a]volume=0.15[music];[voice][music]amix=inputs=2:duration=longest:dropout_transition=0[aout]',
+        ? ['-filter_complex', 
+           `[${hasMusic ? '1' : '0'}:a]aresample=48000,volume=0.15[music];[${hasMusic ? '2' : '1'}:a]aresample=async=1:first_pts=0,volume=1.0[voice];[music][voice]amix=inputs=2:duration=first:dropout_transition=0[aout]`,
            '-map', '0:v:0', '-map', '[aout]']
-        : ['-map', '0:v:0', '-map', '1:a:0']
+        : ['-map', '0:v:0', '-map', `${hasMusic ? '2' : '1'}:a:0`]
       ),
 
       // Scale video and add dynamic subtitle overlay from file
