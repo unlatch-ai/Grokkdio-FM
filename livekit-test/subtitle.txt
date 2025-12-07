@@ -1,1 +1,4 @@
+<<<<<<< HEAD
 Dr. Sam "The Skeptic" Chen: Alex, calm down with the mind control nonsense.  ai isn’t “programming” anyone; it’s just a tool for pattern recognition and generation, not a sci-fi villain.  what’s next, robots stealing your soul?  let’s tal
+=======
+>>>>>>> main

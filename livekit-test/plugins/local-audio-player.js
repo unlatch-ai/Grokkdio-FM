@@ -4,10 +4,18 @@
  * Uses same primitives as TwitchStreamer for consistency
  */
 
+<<<<<<< HEAD
 import { spawn } from "child_process";
 import { EventEmitter } from "events";
 import fs from "fs";
 import path from "path";
+=======
+import { spawn } from 'child_process';
+import { EventEmitter } from 'events';
+import fs from 'fs';
+import path from 'path';
+import { ImageOverlayManager } from '../lib/ImageOverlayManager.js';
+>>>>>>> main
 
 export class LocalAudioPlayer extends EventEmitter {
   constructor(config = {}) {
@@ -28,12 +36,14 @@ export class LocalAudioPlayer extends EventEmitter {
     // Dynamic text overlay (only if enabled)
     this.dynamicText = "";
     this.dynamicTextTimeout = null;
-    this.subtitleFile = path.join(process.cwd(), "subtitle.txt");
-
-    // Create empty subtitle file only if subtitles are enabled
+    this.subtitleFile = path.join(process.cwd(), 'subtitle.txt');
+    
+    // Create empty subtitle file
     if (this.enableSubtitles) {
       fs.writeFileSync(this.subtitleFile, "", "utf8");
-    }
+    }    
+    // Image overlay manager
+    this.imageOverlay = new ImageOverlayManager();
   }
 
   /**
@@ -131,11 +141,16 @@ export class LocalAudioPlayer extends EventEmitter {
           ]
         : ["-map", "0:v:0", "-map", "1:a:0"]),
 
+<<<<<<< HEAD
       // Scale video and optionally add dynamic subtitle overlay from file
       "-vf",
       this.enableSubtitles
         ? `scale=1280:720,drawtext=textfile=${this.subtitleFile}:reload=1:fontsize=32:fontcolor=white:x=(w-text_w)/2:y=h-100:box=1:boxcolor=black@0.7:boxborderw=10`
         : `scale=1280:720`,
+=======
+      // Scale video, add image overlay, and add dynamic text overlay from file
+      '-vf', `scale=1280:720[base];movie=${this.imageOverlay.getOverlayPath()}:loop=0,format=rgba[ovl];[base][ovl]overlay=(W-w)/2:(H-h)/2:format=auto:shortest=0,drawtext=textfile=${this.subtitleFile}:reload=1:fontsize=32:fontcolor=white:x=(w-text_w)/2:y=h-100:box=1:boxcolor=black@0.7:boxborderw=10`,
+>>>>>>> main
 
       // Video encoding
       "-c:v",
@@ -328,6 +343,22 @@ export class LocalAudioPlayer extends EventEmitter {
     } catch (err) {
       // Ignore errors
     }
+  }
+
+  /**
+   * Show an image overlay with fade in/out
+   * @param {string} imagePath - Path to PNG image
+   * @param {object} options - Options (duration, fadeIn, fadeOut)
+   */
+  showImage(imagePath, options = {}) {
+    return this.imageOverlay.showImage(imagePath, options);
+  }
+
+  /**
+   * Hide the current image overlay
+   */
+  hideImage() {
+    return this.imageOverlay.hideImage();
   }
 
   /**

@@ -35,7 +35,7 @@ You: "[shouts] THANKS FOR HAVING ME! [excited] This topic is INSANE! [whispers] 
 
 Example 3:
 User: "Continue the discussion."
-You: "[sighs heavily] Look, [rolls eyes] that's not how it works... [laughs sarcastically] at ALL."
+You: "[sighs heavily] Look, [rolls eyes] that's not how it works... [laughs] at ALL."
 
 REMEMBER: EVERY response must have [emotion brackets] like the examples above!`;
 
