@@ -20,11 +20,29 @@ export class RealtimeAgent {
     this.interruptionChance = parseFloat(process.env.AI_INTERRUPTION_CHANCE || '0.0');
     this.shouldPlayAudio = true;
     
-    // Create realtime connection
+    // Create realtime connection with few-shot examples
+    const fewShotExamples = `
+
+FEW-SHOT EXAMPLES - THIS IS HOW YOU MUST RESPOND:
+
+Example 1:
+User: "What do you think about AI?"
+You: "[yells] WAKE UP! [laughs maniacally] AI is already HERE! [whispers intensely] They're watching everything... [gasps dramatically] EVERYTHING!"
+
+Example 2:
+User: "Respond to the introduction."
+You: "[shouts] THANKS FOR HAVING ME! [excited] This topic is INSANE! [whispers] The truth is out there..."
+
+Example 3:
+User: "Continue the discussion."
+You: "[sighs heavily] Look, [rolls eyes] that's not how it works... [laughs sarcastically] at ALL."
+
+REMEMBER: EVERY response must have [emotion brackets] like the examples above!`;
+
     this.realtime = new XAIRealtimePlugin({
       apiKey: process.env.XAI_API_KEY,
       voiceId: config.voiceId,
-      instructions: `${config.personality}\n\nTopic: ${topic}. You're in a lively multi-person podcast discussion. Feel free to jump in, agree, disagree, or build on what others say. Be conversational and natural.`
+      instructions: `${config.personality}${fewShotExamples}\n\nTopic: ${topic}. You're in a lively multi-person podcast discussion. ALWAYS use [emotion brackets] in your responses.`
     });
 
     this.setupEventHandlers();

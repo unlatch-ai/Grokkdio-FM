@@ -6,6 +6,8 @@
 
 import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
+import fs from 'fs';
+import path from 'path';
 
 export class LocalAudioPlayer extends EventEmitter {
   constructor(config = {}) {
@@ -23,6 +25,10 @@ export class LocalAudioPlayer extends EventEmitter {
     // Dynamic text overlay
     this.dynamicText = '';
     this.dynamicTextTimeout = null;
+    this.subtitleFile = path.join(process.cwd(), 'subtitle.txt');
+    
+    // Create empty subtitle file
+    fs.writeFileSync(this.subtitleFile, '', 'utf8');
   }
 
   /**
@@ -61,6 +67,14 @@ export class LocalAudioPlayer extends EventEmitter {
 
     // Check if background video exists
     const backgroundVideo = process.env.BACKGROUND_VIDEO || './media/gta.mp4';
+    
+    // Check for background music
+    const backgroundMusic = process.env.BACKGROUND_MUSIC || path.join(process.cwd(), 'media', 'background-music.mp3');
+    const hasMusic = fs.existsSync(backgroundMusic);
+    
+    if (hasMusic) {
+      console.log(`🎵 Found background music: ${backgroundMusic}`);
+    }
 
     // FFmpeg loops video and overlays audio + text
     const ffmpegArgs = [
@@ -75,12 +89,16 @@ export class LocalAudioPlayer extends EventEmitter {
       '-ac', this.channels.toString(),
       '-i', 'pipe:0',
 
-      // Map only video from first input, audio from second input
-      '-map', '0:v:0',  // Video from background video
-      '-map', '1:a:0',  // Audio from stdin (podcast)
+      // Background music input (optional, looped)
+      ...(hasMusic
+        ? ['-stream_loop', '-1', '-i', backgroundMusic, '-filter_complex', 
+           '[1:a]volume=1.0[voice];[2:a]volume=0.15[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=2[aout]',
+           '-map', '0:v:0', '-map', '[aout]']
+        : ['-map', '0:v:0', '-map', '1:a:0']
+      ),
 
-      // Scale video to 720p (no permanent text overlay)
-      '-vf', `scale=1280:720`,
+      // Scale video and add dynamic text overlay from file
+      '-vf', `scale=1280:720,drawtext=textfile=${this.subtitleFile}:reload=1:fontsize=32:fontcolor=white:x=(w-text_w)/2:y=h-100:box=1:boxcolor=black@0.7:boxborderw=10`,
 
       // Video encoding
       '-c:v', 'libx264',
@@ -231,6 +249,21 @@ export class LocalAudioPlayer extends EventEmitter {
   }
 
   /**
+   * Update subtitle text on video
+   * @param {string} text - Subtitle text to display
+   */
+  updateSubtitle(text) {
+    if (!this.isPlaying) return;
+    
+    try {
+      // Write text to file - ffmpeg will reload it automatically
+      fs.writeFileSync(this.subtitleFile, text, 'utf8');
+    } catch (err) {
+      // Ignore errors
+    }
+  }
+
+  /**
    * Clear audio buffer (interrupt current playback)
    * Restarts the player to truly clear all buffers
    */
@@ -302,20 +335,6 @@ export class LocalAudioPlayer extends EventEmitter {
    * Stop the local audio player
    */
   stop() {
-    if (!this.isPlaying) {
-      return;
-    }
-
-    console.log('🛑 Stopping local preview...');
-
-    try {
-      if (this.ffmpegProcess && this.ffmpegProcess.stdin && !this.ffmpegProcess.stdin.destroyed) {
-        this.ffmpegProcess.stdin.end();
-      }
-    } catch (err) {
-      console.error('Error ending ffmpeg stdin:', err.message);
-    }
-
     if (this.ffmpegProcess) {
       this.ffmpegProcess.kill('SIGINT');
     }

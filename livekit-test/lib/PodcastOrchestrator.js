@@ -6,7 +6,7 @@
 import { AudioSource } from '@livekit/rtc-node';
 import { LocalAudioPlayer } from '../plugins/local-audio-player.js';
 import { TwitchStreamer } from '../plugins/twitch-streamer.js';
-import { RealtimeAgent } from './RealtimeAgent.js';
+import { TTSAgent } from './TTSAgent.js';
 import { NewsInjector } from './NewsInjector.js';
 import { TextOverlayManager } from './TextOverlay.js';
 import readline from 'readline';
@@ -29,7 +29,7 @@ export class PodcastOrchestrator {
     this.userInput = null;
     this.rl = null;
     this.newsInjector = new NewsInjector();
-    this.textOverlay = new TextOverlayManager();
+    this.textOverlay = null; // Will be initialized after localPlayer
   }
 
   setupInput() {
@@ -108,21 +108,22 @@ export class PodcastOrchestrator {
     if (TWITCH_MODE) {
       this.twitchStreamer = new TwitchStreamer({
         streamKey: process.env.TWITCH_STREAM_KEY,
-        rtmpUrl: process.env.TWITCH_RTMP_URL,
-        sampleRate: 24000,
-        channels: 1,
-        overlayText: `AI Podcast - ${this.topic}`
+        overlayText: `AI Podcast: ${this.topic}`
       });
       await this.twitchStreamer.start();
-      console.log('📺 Streaming to Twitch!');
+      console.log('🎥 Twitch stream started');
+      
+      // Initialize text overlay with Twitch streamer reference
+      this.textOverlay = new TextOverlayManager(this.twitchStreamer);
     } else if (LOCAL_MODE) {
       this.localPlayer = new LocalAudioPlayer({
-        sampleRate: 24000,
-        channels: 1,
-        overlayText: `AI Podcast - ${this.topic}`,
+        overlayText: `AI Podcast: ${this.topic}`,
         showVideo: true
       });
       await this.localPlayer.start();
+      
+      // Initialize text overlay with local player reference
+      this.textOverlay = new TextOverlayManager(this.localPlayer);
     } else if (room) {
       this.audioSource = new AudioSource(24000, 1);
       await room.localParticipant.publishTrack({
@@ -130,17 +131,55 @@ export class PodcastOrchestrator {
         name: 'podcast-audio'
       });
       console.log('🎵 Audio track published to LiveKit');
+      
+      // Initialize text overlay without local player
+      this.textOverlay = new TextOverlayManager();
+    }
+    
+    // Fallback if text overlay wasn't initialized
+    if (!this.textOverlay) {
+      this.textOverlay = new TextOverlayManager();
     }
 
-    // Initialize all agents
+    // Create agents
+    console.log('\n🤖 Creating agents...');
     for (const config of this.agentConfigs) {
-      const agent = new RealtimeAgent(config, this.topic);
-      await agent.initialize();
+      const agent = new TTSAgent(config, this.topic);
       
-      // Route audio from each agent to output
-      agent.realtime.on('audio', (audioBuffer) => {
-        if (this.isRunning && agent.shouldPlayAudio) {
-          this.playAudio(audioBuffer);
+      // Handle audio output - write in chunks to prevent buffer overflow
+      agent.on('audio', (audioBuffer) => {
+        // Split large buffers into smaller chunks (100ms each)
+        const chunkSize = 4800; // 100ms at 24kHz, 16-bit
+        
+        for (let offset = 0; offset < audioBuffer.length; offset += chunkSize) {
+          const chunk = audioBuffer.slice(offset, offset + chunkSize);
+          
+          if (this.localPlayer) {
+            this.localPlayer.writeAudio(chunk);
+          }
+          if (this.twitchStreamer) {
+            this.twitchStreamer.writeAudio(chunk);
+          }
+          if (this.audioSource) {
+            this.audioSource.captureFrame(chunk);
+          }
+        }
+      });
+      
+      // Handle subtitles with typewriter effect
+      agent.on('subtitle', (data) => {
+        this.textOverlay.showTypingText(data.name, data.text, data.duration);
+      });
+      
+      // Add silence padding between speakers
+      agent.on('finished', () => {
+        // Send 2 seconds of silence to keep stream alive during generation
+        const silenceBuffer = Buffer.alloc(96000); // 2000ms at 24kHz, 16-bit
+        if (this.localPlayer) {
+          this.localPlayer.writeAudio(silenceBuffer);
+        }
+        if (this.twitchStreamer) {
+          this.twitchStreamer.writeAudio(silenceBuffer);
         }
       });
       
@@ -181,7 +220,8 @@ export class PodcastOrchestrator {
           turnCount++;
           
           if (this.userInput || this.newsInjector.hasBreakingNews()) break;
-          await new Promise(resolve => setTimeout(resolve, 600));
+          // No pause needed - agents should flow naturally
+          // await new Promise(resolve => setTimeout(resolve, 300));
         }
         continue;
       }
@@ -202,13 +242,18 @@ export class PodcastOrchestrator {
         this.currentSpeaker = null;
         turnCount++;
         
-        await new Promise(resolve => setTimeout(resolve, 600));
+        // Quick transition after user response
+        await new Promise(resolve => setTimeout(resolve, 300));
         continue;
       }
       
       // Regular conversation
+      let preGeneratedText = null;
+      let preGeneratedAudio = null;
+      
       for (let i = 0; i < this.agents.length && this.isRunning; i++) {
         const currentAgent = this.agents[i];
+        const nextAgent = this.agents[(i + 1) % this.agents.length];
         const otherAgents = this.agents.filter((_, idx) => idx !== i);
         
         // Build prompt with optional news context
@@ -219,7 +264,24 @@ export class PodcastOrchestrator {
         prompt += this.newsInjector.getRegularNewsContext();
         
         this.currentSpeaker = currentAgent;
-        const speakPromise = currentAgent.speak(prompt, true);
+        
+        // Use pre-generated content if available
+        let speakPromise;
+        if (preGeneratedText && preGeneratedAudio) {
+          console.log(`${currentAgent.config.color}⚡ ${currentAgent.config.name} using pre-generated content${RESET_COLOR}`);
+          speakPromise = currentAgent.speakPreGenerated(preGeneratedText, preGeneratedAudio, true);
+          preGeneratedText = null;
+          preGeneratedAudio = null;
+        } else {
+          speakPromise = currentAgent.speak(prompt, true);
+        }
+        
+        // Start pre-generating next agent's content in parallel
+        let nextGenPromise = null;
+        if (nextAgent && !this.userInput && !this.newsInjector.hasBreakingNews()) {
+          const nextPrompt = `Continue the discussion. Build on what was just said about ${this.topic}.`;
+          nextGenPromise = this.preGenerateContent(nextAgent, nextPrompt);
+        }
         
         // Check for interruptions
         const interruptCheck = setInterval(() => {
@@ -262,10 +324,36 @@ export class PodcastOrchestrator {
         }
         
         if (this.userInput || this.newsInjector.hasBreakingNews()) {
+          // Cancel pre-generation if interrupted
+          preGeneratedText = null;
+          preGeneratedAudio = null;
           break;
         }
         
-        await new Promise(resolve => setTimeout(resolve, 600));
+        // Wait for pre-generation to complete
+        if (nextGenPromise) {
+          try {
+            const result = await nextGenPromise;
+            if (result && !this.userInput && !this.newsInjector.hasBreakingNews()) {
+              preGeneratedText = result.text;
+              preGeneratedAudio = result.audio;
+            }
+          } catch (err) {
+            console.error('Pre-generation failed:', err.message);
+          }
+        }
+        
+        // If pre-generation isn't ready, add extra silence to prevent stream gaps
+        if (!preGeneratedText || !preGeneratedAudio) {
+          console.log('⏳ Pre-generation not ready, adding silence buffer...');
+          const silenceBuffer = Buffer.alloc(96000); // 2000ms silence
+          if (this.localPlayer) {
+            this.localPlayer.writeAudio(silenceBuffer);
+          }
+          if (this.twitchStreamer) {
+            this.twitchStreamer.writeAudio(silenceBuffer);
+          }
+        }
         
         if (turnCount >= maxTurns) break;
       }
@@ -298,23 +386,37 @@ export class PodcastOrchestrator {
     }
   }
 
-  cleanup() {
-    this.isRunning = false;
-    
-    for (const agent of this.agents) {
-      agent.disconnect();
+  async preGenerateContent(agent, prompt) {
+    try {
+      // Generate text
+      const text = await agent.generateResponseOnly(prompt);
+      if (!text) return null;
+      
+      // Generate audio
+      const audio = await agent.tts.synthesize(text);
+      
+      return { text, audio };
+    } catch (err) {
+      console.error(`Pre-gen error for ${agent.config.name}:`, err.message);
+      return null;
     }
-    
-    if (this.twitchStreamer) {
-      this.twitchStreamer.stop();
+  }
+
+  cleanup() {
+    if (this.rl) {
+      this.rl.close();
     }
     
     if (this.localPlayer) {
       this.localPlayer.stop();
     }
     
-    if (this.rl) {
-      this.rl.close();
+    if (this.twitchStreamer) {
+      this.twitchStreamer.stop();
+    }
+    
+    for (const agent of this.agents) {
+      agent.cleanup();
     }
   }
 
