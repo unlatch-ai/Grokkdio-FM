@@ -88,7 +88,7 @@ export class TwitchStreamer extends EventEmitter {
       // Background music input (optional, looped)
       ...(hasMusic
         ? ['-stream_loop', '-1', '-i', backgroundMusic, '-filter_complex', 
-           '[1:a]volume=1.0[voice];[2:a]volume=0.15[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=2[aout]',
+           '[1:a]aresample=async=1:first_pts=0,volume=1.0[voice];[2:a]volume=0.15[music];[voice][music]amix=inputs=2:duration=longest:dropout_transition=0[aout]',
            '-map', '0:v:0', '-map', '[aout]']
         : ['-map', '0:v:0', '-map', '1:a:0']
       ),
@@ -161,18 +161,19 @@ export class TwitchStreamer extends EventEmitter {
 
     this.isStreaming = true;
     
-    // Start keep-alive silence generator (sends silence every 100ms to prevent starvation)
+    // Always use keep-alive to prevent stdin starvation
+    console.log('🔄 Starting stdin keep-alive (100ms silence every 500ms)');
     this.keepAliveInterval = setInterval(() => {
       if (this.isStreaming && this.ffmpegProcess && !this.ffmpegProcess.stdin.destroyed) {
         try {
-          // Send 100ms of silence
+          // Send 100ms of silence to keep stdin alive
           const silenceBuffer = Buffer.alloc(4800); // 100ms at 24kHz, 16-bit
           this.ffmpegProcess.stdin.write(silenceBuffer);
         } catch (err) {
           // Ignore write errors
         }
       }
-    }, 100);
+    }, 500); // Every 500ms
     
     this.emit('started');
     

@@ -36,9 +36,19 @@ export class LocalAudioPlayer extends EventEmitter {
    * @returns {Promise<void>}
    */
   async start() {
-    if (this.isPlaying) {
-      console.warn('Local audio player already running');
+    if (this.isPlaying && this.ffmpegProcess && !this.ffmpegProcess.killed) {
+      console.warn('Audio player already running');
       return;
+    }
+
+    // Clean up any existing process
+    if (this.ffmpegProcess) {
+      try {
+        this.ffmpegProcess.kill('SIGKILL');
+      } catch (err) {
+        // Ignore
+      }
+      this.ffmpegProcess = null;
     }
 
     console.log('🔊 Starting local preview...');
@@ -92,7 +102,7 @@ export class LocalAudioPlayer extends EventEmitter {
       // Background music input (optional, looped)
       ...(hasMusic
         ? ['-stream_loop', '-1', '-i', backgroundMusic, '-filter_complex', 
-           '[1:a]volume=1.0[voice];[2:a]volume=0.15[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=2[aout]',
+           '[1:a]aresample=async=1:first_pts=0,volume=1.0[voice];[2:a]volume=0.15[music];[voice][music]amix=inputs=2:duration=longest:dropout_transition=0[aout]',
            '-map', '0:v:0', '-map', '[aout]']
         : ['-map', '0:v:0', '-map', '1:a:0']
       ),
@@ -177,11 +187,18 @@ export class LocalAudioPlayer extends EventEmitter {
     });
 
     this.ffplayProcess.on('close', (code) => {
-      if (!this.isRestarting) {
-        console.log('\n🎬 Preview window closed');
-        this.isPlaying = false;
-        this.emit('stopped', code);
+      console.log(`\n🎬 Preview window closed (code: ${code})`);
+      
+      const wasPlaying = this.isPlaying;
+      this.isPlaying = false;
+      
+      // Kill ffmpeg too
+      if (this.ffmpegProcess && !this.ffmpegProcess.killed) {
+        this.ffmpegProcess.kill('SIGKILL');
       }
+      
+      // Don't auto-restart - user likely closed it intentionally
+      this.emit('stopped');
     });
 
     console.log('✅ Preview window opened');
