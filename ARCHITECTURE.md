@@ -237,6 +237,172 @@ The system supports three runtime modes, selected via environment variables:
 
 ---
 
+## LiveKit Integration (ASCII Diagram)
+
+Grokkdio FM uses the **LiveKit Agents Framework** (`@livekit/agents`) as its default runtime mode. This enables real-time WebRTC audio distribution to multiple listeners through LiveKit rooms.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         LIVEKIT AGENTS FRAMEWORK                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                         index.js                                    │   │
+│   │                                                                     │   │
+│   │   import { WorkerOptions, cli, defineAgent } from "@livekit/agents" │   │
+│   │                                                                     │   │
+│   │   export default defineAgent({                                      │   │
+│   │     entry: async (ctx) => {                                         │   │
+│   │       const podcast = new PodcastOrchestrator(AGENT_CONFIGS, topic) │   │
+│   │       await podcast.initialize(ctx.room)  ◄── LiveKit Room passed   │   │
+│   │       await podcast.runPodcast()                                    │   │
+│   │     }                                                               │   │
+│   │   })                                                                │   │
+│   │                                                                     │   │
+│   │   // Starts LiveKit worker via CLI                                  │   │
+│   │   cli.runApp(new WorkerOptions({ agent: ... }))                     │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                    │                                        │
+│                                    ▼                                        │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                    PodcastOrchestrator.initialize(room)             │   │
+│   │                                                                     │   │
+│   │   import { AudioSource } from "@livekit/rtc-node"                   │   │
+│   │                                                                     │   │
+│   │   if (room) {                                                       │   │
+│   │     // Create 24kHz mono audio source                               │   │
+│   │     this.audioSource = new AudioSource(24000, 1)                    │   │
+│   │                                                                     │   │
+│   │     // Publish audio track to LiveKit room                          │   │
+│   │     await room.localParticipant.publishTrack({                      │   │
+│   │       source: this.audioSource,                                     │   │
+│   │       name: "podcast-audio"                                         │   │
+│   │     })                                                              │   │
+│   │                                                                     │   │
+│   │     // Register with AudioBus for unified routing                   │   │
+│   │     audioBus.addOutput({                                            │   │
+│   │       name: "LiveKit",                                              │   │
+│   │       writeAudio: (buffer) => this.audioSource.captureFrame(buffer) │   │
+│   │     })                                                              │   │
+│   │   }                                                                 │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+                                    │
+                                    │ Audio flows through AudioBus
+                                    ▼
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              AUDIO FLOW                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   TTSAgent ──► emit('audio', buffer) ──► AudioBus.writeAudio(buffer)        │
+│                                              │                              │
+│                                              ▼                              │
+│                          ┌───────────────────────────────────┐              │
+│                          │         AudioBus (Singleton)      │              │
+│                          │                                   │              │
+│                          │   outputs.forEach(output =>       │              │
+│                          │     output.writeAudio(buffer)     │              │
+│                          │   )                               │              │
+│                          └───────────────────────────────────┘              │
+│                                              │                              │
+│                    ┌─────────────┬───────────┼───────────┬─────────────┐    │
+│                    ▼             ▼           ▼           ▼             ▼    │
+│              ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐           │
+│              │ LiveKit  │ │  Twitch  │ │  Local   │ │  Twilio  │           │
+│              │  Room    │ │  RTMP    │ │  FFplay  │ │  Callers │           │
+│              └──────────┘ └──────────┘ └──────────┘ └──────────┘           │
+│                   │                                                         │
+│                   ▼                                                         │
+│         audioSource.captureFrame(buffer)                                    │
+│                   │                                                         │
+│                   ▼                                                         │
+│         ┌─────────────────────────────────┐                                 │
+│         │     LiveKit Cloud / Server      │                                 │
+│         │                                 │                                 │
+│         │   Room: "podcast-room"          │                                 │
+│         │   Track: "podcast-audio"        │                                 │
+│         │   Format: 24kHz PCM mono        │                                 │
+│         └─────────────────────────────────┘                                 │
+│                   │                                                         │
+│                   ▼                                                         │
+│         ┌─────────────────────────────────┐                                 │
+│         │      WebRTC Subscribers         │                                 │
+│         │                                 │                                 │
+│         │   • Web browsers                │                                 │
+│         │   • Mobile apps                 │                                 │
+│         │   • Other LiveKit clients       │                                 │
+│         └─────────────────────────────────┘                                 │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### LiveKit-Twilio Bridge (Alternative Architecture)
+
+There's also a `twilio-livekit-bridge.js` that connects phone callers directly to a LiveKit room:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        TWILIO-LIVEKIT BRIDGE                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   Phone Caller                                                              │
+│       │                                                                     │
+│       ▼                                                                     │
+│   ┌──────────────────┐                                                      │
+│   │   Twilio Cloud   │                                                      │
+│   │   (Phone Network)│                                                      │
+│   └────────┬─────────┘                                                      │
+│            │ WebSocket (Media Streams)                                      │
+│            ▼                                                                │
+│   ┌──────────────────────────────────────────────────────────────────┐      │
+│   │                  twilio-livekit-bridge.js                        │      │
+│   │                                                                  │      │
+│   │   • Express server on port 3001                                  │      │
+│   │   • /voice endpoint returns TwiML with <Stream>                  │      │
+│   │   • /media-stream WebSocket handles bidirectional audio          │      │
+│   │                                                                  │      │
+│   │   On call start:                                                 │      │
+│   │     1. Connect to LiveKit room using @livekit/rtc-node           │      │
+│   │     2. Generate access token with livekit-server-sdk             │      │
+│   │     3. Subscribe to room's audio tracks                          │      │
+│   │                                                                  │      │
+│   │   Audio flow:                                                    │      │
+│   │     LiveKit → downsample 48kHz→8kHz → PCM→mulaw → Twilio caller  │      │
+│   │     Twilio caller → mulaw→PCM → (TODO: publish to LiveKit room)  │      │
+│   └──────────────────────────────────────────────────────────────────┘      │
+│            │                                                                │
+│            │ @livekit/rtc-node                                              │
+│            ▼                                                                │
+│   ┌──────────────────┐                                                      │
+│   │   LiveKit Room   │                                                      │
+│   │   "podcast-room" │                                                      │
+│   └──────────────────┘                                                      │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key LiveKit Components Used
+
+| Package | Purpose |
+|---------|---------|
+| `@livekit/agents` | Agent framework - `defineAgent()`, `WorkerOptions`, `cli.runApp()` |
+| `@livekit/rtc-node` | Real-time communication - `AudioSource`, `Room`, `RoomEvent` |
+| `livekit-server-sdk` | Server-side utilities - `AccessToken` generation |
+
+### LiveKit Environment Variables
+
+```bash
+# Required for LiveKit mode (when neither LOCAL_MODE nor TWITCH_MODE is set)
+LIVEKIT_URL=wss://your-livekit-server.com
+LIVEKIT_API_KEY=your-api-key
+LIVEKIT_API_SECRET=your-api-secret
+```
+
+---
+
 ## Key Component Responsibilities
 
 ### PodcastOrchestrator

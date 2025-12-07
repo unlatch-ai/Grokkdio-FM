@@ -106,10 +106,49 @@ While one host is speaking, we're already generating the next host's response AN
 | **LLM** | Grok-3 via XAI API |
 | **Voice** | XAI Voice Cloning + TTS |
 | **Streaming** | FFmpeg → Twitch RTMP |
+| **WebRTC** | LiveKit Agents Framework |
 | **Phone** | Twilio Media Streams + STT |
 | **Trends** | X/Twitter API v2 |
 | **Screenshots** | Puppeteer |
 | **Runtime** | Node.js 18+ |
+
+---
+
+## LiveKit Integration (Default Mode)
+
+When not running in Local or Twitch mode, Grokkdio FM uses **LiveKit Agents** for WebRTC audio distribution:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      LIVEKIT AGENTS MODE                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   ┌─────────────┐     ┌─────────────────────┐     ┌─────────────────┐   │
+│   │  index.js   │────▶│ PodcastOrchestrator │────▶│  LiveKit Room   │   │
+│   │             │     │                     │     │                 │   │
+│   │ defineAgent │     │ • Gets ctx.room     │     │ • "podcast-room"│   │
+│   │ cli.runApp  │     │ • Creates AudioSource│    │ • 24kHz audio   │   │
+│   └─────────────┘     │ • Publishes track   │     │ • WebRTC stream │   │
+│                       └─────────────────────┘     └────────┬────────┘   │
+│                                                            │            │
+│                                                            ▼            │
+│                                                   ┌─────────────────┐   │
+│                                                   │   Subscribers   │   │
+│                                                   │                 │   │
+│                                                   │ • Web browsers  │   │
+│                                                   │ • Mobile apps   │   │
+│                                                   │ • LiveKit SDKs  │   │
+│                                                   └─────────────────┘   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**How it works:**
+1. `index.js` uses `@livekit/agents` to define an agent with `defineAgent()`
+2. When a room connects, the agent's `entry` function receives `ctx.room`
+3. `PodcastOrchestrator` creates an `AudioSource` from `@livekit/rtc-node`
+4. Audio is published as a track named "podcast-audio" to the LiveKit room
+5. Any WebRTC client can subscribe and listen in real-time
 
 ---
 
