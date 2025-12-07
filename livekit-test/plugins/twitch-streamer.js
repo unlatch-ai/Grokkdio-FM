@@ -170,7 +170,7 @@ export class TwitchStreamer extends EventEmitter {
     this.ffmpegProcess.stderr.on("data", (data) => {
       const output = data.toString();
       // Show all ffmpeg output for debugging
-      console.log("FFmpeg:", output);
+      // console.log("FFmpeg:", output);
     });
 
     this.ffmpegProcess.on("error", (err) => {

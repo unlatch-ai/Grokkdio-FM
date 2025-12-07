@@ -497,7 +497,7 @@ REMEMBER: EVERY response must have [emotion brackets] like the examples above!`;
     this.currentTranscript = text;
 
     try {
-      const durationMs = (audioBuffer.length / (24000 * 2)) * 1000;
+      const durationMs = (audioBuffer.length / (24000 * 2)) * 1000 - 2000;
       const playStartTime = Date.now();
 
       console.log(
@@ -563,6 +563,381 @@ REMEMBER: EVERY response must have [emotion brackets] like the examples above!`;
 
   getName() {
     return this.config.name;
+  }
+
+  /**
+   * Split text into sentences for sentence-by-sentence playback
+   * Handles emotion brackets like [laughs] that shouldn't be split
+   */
+  splitIntoSentences(text) {
+    // Match sentences ending with . ! ? followed by space or end
+    // But preserve emotion brackets that might span sentences
+    const sentences = [];
+
+    // Split on sentence-ending punctuation followed by space or end
+    const parts = text.split(/(?<=[.!?])\s+/);
+
+    for (const part of parts) {
+      const trimmed = part.trim();
+      if (trimmed) {
+        sentences.push(trimmed);
+      }
+    }
+
+    // If no sentences found, return the whole text as one
+    if (sentences.length === 0 && text.trim()) {
+      sentences.push(text.trim());
+    }
+
+    return sentences;
+  }
+
+  /**
+   * Play audio sentence-by-sentence with interruption checks between sentences.
+   * Generates ALL audio upfront, then plays with overlap for seamless playback.
+   *
+   * @param {string} text - Full text to speak
+   * @param {Function} checkInterruption - Callback that returns true if interrupted
+   * @returns {Promise<boolean>} - Returns true if completed, false if interrupted
+   */
+  async playAudioSentenceBySentence(text, checkInterruption) {
+    if (!text || this.wasInterrupted) return false;
+
+    const sentences = this.splitIntoSentences(text);
+    console.log(
+      `${this.config.color}📝 Split into ${sentences.length} sentences${RESET_COLOR}`
+    );
+
+    if (sentences.length === 0) return true;
+
+    this.isSpeaking = true;
+    this.shouldPlayAudio = true;
+    this.currentTranscript = text;
+
+    try {
+      // STEP 1: Generate ALL audio upfront in parallel
+      console.log(
+        `${this.config.color}🎵 Generating all ${sentences.length} sentence audios upfront...${RESET_COLOR}`
+      );
+      const ttsStartAll = Date.now();
+
+      const audioBuffers = await Promise.all(
+        sentences.map(async (sentence, idx) => {
+          const ttsStart = Date.now();
+          const audio = await this.tts.synthesize(sentence);
+          const ttsTime = Date.now() - ttsStart;
+          console.log(
+            `${this.config.color}  ✓ Sentence ${idx + 1}: ${ttsTime}ms (${
+              audio.length
+            } bytes)${RESET_COLOR}`
+          );
+          return audio;
+        })
+      );
+
+      const totalTtsTime = Date.now() - ttsStartAll;
+      console.log(
+        `${this.config.color}⏱️  All TTS done in ${totalTtsTime}ms${RESET_COLOR}`
+      );
+
+      // Check for interruption after TTS generation
+      if (this.wasInterrupted || (checkInterruption && checkInterruption())) {
+        console.log(
+          `${this.config.color}🛑 Interrupted after TTS generation${RESET_COLOR}`
+        );
+        return false;
+      }
+
+      // STEP 2: Play sentences with overlap (add next 2s before current ends)
+      const OVERLAP_MS = 2000; // Add next sentence 2s before current ends
+
+      for (let i = 0; i < sentences.length; i++) {
+        const sentence = sentences[i];
+        const audioBuffer = audioBuffers[i];
+        const isLastSentence = i === sentences.length - 1;
+
+        // Check for interruption before each sentence
+        if (this.wasInterrupted || (checkInterruption && checkInterruption())) {
+          console.log(
+            `${this.config.color}🛑 INTERRUPTED before sentence ${i + 1}/${
+              sentences.length
+            } - stopping playback${RESET_COLOR}`
+          );
+          this.wasInterrupted = true;
+          this.audioPlaying = false;
+          return false;
+        }
+
+        console.log(
+          `${this.config.color}🎤 Playing sentence ${i + 1}/${
+            sentences.length
+          }: "${sentence}"${RESET_COLOR}`
+        );
+
+        // Calculate audio duration
+        const durationMs = (audioBuffer.length / (24000 * 2)) * 1000;
+
+        // Start playing this sentence
+        const playStartTime = Date.now();
+        this.audioPlaying = true;
+        this.emit("audio", audioBuffer);
+
+        // Emit subtitle for this sentence
+        let cleanText = sentence.replace(/\[.*?\]/g, "").trim();
+        cleanText = cleanText.toLowerCase();
+        cleanText = cleanText.charAt(0).toUpperCase() + cleanText.slice(1);
+
+        this.emit("subtitle", {
+          name: this.config.name,
+          text: cleanText,
+          duration: durationMs,
+        });
+
+        // Calculate wait time - reduced overlap for tighter timing
+        const waitTime = isLastSentence
+          ? durationMs
+          : Math.max(100, durationMs - OVERLAP_MS);
+
+        console.log(
+          `${this.config.color}   ⏱️  Audio duration: ${durationMs.toFixed(
+            0
+          )}ms, will wait: ${waitTime.toFixed(0)}ms (overlap: ${
+            isLastSentence ? 0 : OVERLAP_MS
+          }ms)${RESET_COLOR}`
+        );
+
+        // Wait for audio (or until overlap point for next sentence)
+        const waitStartTime = Date.now();
+        await new Promise((resolve) => {
+          const checkInterval = setInterval(() => {
+            if (this.wasInterrupted || !this.shouldPlayAudio) {
+              clearInterval(checkInterval);
+              resolve();
+            }
+            if (checkInterruption && checkInterruption()) {
+              this.wasInterrupted = true;
+              clearInterval(checkInterval);
+              resolve();
+            }
+          }, 50);
+
+          setTimeout(() => {
+            clearInterval(checkInterval);
+            resolve();
+          }, waitTime);
+        });
+
+        const actualWait = Date.now() - waitStartTime;
+        const totalElapsed = Date.now() - playStartTime;
+        console.log(
+          `${this.config.color}   ⏹️  Sentence ${
+            i + 1
+          } wait done - waited ${actualWait}ms (total elapsed since emit: ${totalElapsed}ms)${RESET_COLOR}`
+        );
+
+        // If interrupted during playback, stop immediately
+        if (this.wasInterrupted) {
+          console.log(
+            `${this.config.color}🛑 INTERRUPTED during sentence ${
+              i + 1
+            } - stopping remaining ${
+              sentences.length - i - 1
+            } sentences${RESET_COLOR}`
+          );
+          this.audioPlaying = false;
+          return false;
+        }
+      }
+
+      this.audioPlaying = false;
+      this.emit("finished");
+      return true;
+    } finally {
+      this.isSpeaking = false;
+      this.audioPlaying = false;
+      this.isActive = false;
+    }
+  }
+
+  /**
+   * Play pre-generated audio sentence-by-sentence with interruption checks.
+   * This version takes the full response text and pre-generated audio for the FIRST sentence,
+   * then generates remaining sentences in parallel before playing with overlap.
+   *
+   * @param {string} text - Full text to speak
+   * @param {Buffer} firstSentenceAudio - Pre-generated audio for first sentence (optional)
+   * @param {Function} checkInterruption - Callback that returns true if interrupted
+   * @returns {Promise<boolean>} - Returns true if completed, false if interrupted
+   */
+  async playPreGeneratedAudioSentenceBySentence(
+    text,
+    firstSentenceAudio,
+    checkInterruption
+  ) {
+    if (!text || this.wasInterrupted) return false;
+
+    const sentences = this.splitIntoSentences(text);
+    console.log(
+      `${this.config.color}📝 Split into ${sentences.length} sentences (first may be prefetched)${RESET_COLOR}`
+    );
+
+    if (sentences.length === 0) return true;
+
+    this.isSpeaking = true;
+    this.shouldPlayAudio = true;
+    this.currentTranscript = text;
+
+    try {
+      // STEP 1: Generate ALL audio upfront (use firstSentenceAudio if provided)
+      console.log(
+        `${this.config.color}🎵 Generating remaining sentence audios...${RESET_COLOR}`
+      );
+      const ttsStartAll = Date.now();
+
+      const audioBuffers = await Promise.all(
+        sentences.map(async (sentence, idx) => {
+          // Use pre-generated first sentence if available
+          if (idx === 0 && firstSentenceAudio) {
+            console.log(
+              `${this.config.color}  ✓ Sentence 1: using pre-generated audio (${firstSentenceAudio.length} bytes)${RESET_COLOR}`
+            );
+            return firstSentenceAudio;
+          }
+
+          const ttsStart = Date.now();
+          const audio = await this.tts.synthesize(sentence);
+          const ttsTime = Date.now() - ttsStart;
+          console.log(
+            `${this.config.color}  ✓ Sentence ${idx + 1}: ${ttsTime}ms (${
+              audio.length
+            } bytes)${RESET_COLOR}`
+          );
+          return audio;
+        })
+      );
+
+      const totalTtsTime = Date.now() - ttsStartAll;
+      console.log(
+        `${this.config.color}⏱️  All TTS done in ${totalTtsTime}ms${RESET_COLOR}`
+      );
+
+      // Check for interruption after TTS generation
+      if (this.wasInterrupted || (checkInterruption && checkInterruption())) {
+        console.log(
+          `${this.config.color}🛑 Interrupted after TTS generation${RESET_COLOR}`
+        );
+        return false;
+      }
+
+      // STEP 2: Play sentences with minimal overlap for seamless flow
+      const OVERLAP_MS = 500; // Reduced overlap - just 500ms for smooth transition
+
+      for (let i = 0; i < sentences.length; i++) {
+        const sentence = sentences[i];
+        const audioBuffer = audioBuffers[i];
+        const isLastSentence = i === sentences.length - 1;
+
+        // Check for interruption before each sentence
+        if (this.wasInterrupted || (checkInterruption && checkInterruption())) {
+          console.log(
+            `${this.config.color}🛑 INTERRUPTED before sentence ${i + 1}/${
+              sentences.length
+            } - stopping playback${RESET_COLOR}`
+          );
+          this.wasInterrupted = true;
+          this.audioPlaying = false;
+          return false;
+        }
+
+        console.log(
+          `${this.config.color}🎤 Playing sentence ${i + 1}/${
+            sentences.length
+          }: "${sentence}"${RESET_COLOR}`
+        );
+
+        // Calculate audio duration
+        const durationMs = (audioBuffer.length / (24000 * 2)) * 1000;
+
+        // Start playing this sentence
+        const playStartTime = Date.now();
+        this.audioPlaying = true;
+        this.emit("audio", audioBuffer);
+
+        // Emit subtitle for this sentence
+        let cleanText = sentence.replace(/\[.*?\]/g, "").trim();
+        cleanText = cleanText.toLowerCase();
+        cleanText = cleanText.charAt(0).toUpperCase() + cleanText.slice(1);
+
+        this.emit("subtitle", {
+          name: this.config.name,
+          text: cleanText,
+          duration: durationMs,
+        });
+
+        // Calculate wait time - reduced overlap for tighter timing
+        const waitTime = isLastSentence
+          ? durationMs
+          : Math.max(100, durationMs - OVERLAP_MS);
+
+        console.log(
+          `${this.config.color}   ⏱️  Audio duration: ${durationMs.toFixed(
+            0
+          )}ms, will wait: ${waitTime.toFixed(0)}ms (overlap: ${
+            isLastSentence ? 0 : OVERLAP_MS
+          }ms)${RESET_COLOR}`
+        );
+
+        // Wait for audio (or until overlap point for next sentence)
+        const waitStartTime = Date.now();
+        await new Promise((resolve) => {
+          const checkInterval = setInterval(() => {
+            if (this.wasInterrupted || !this.shouldPlayAudio) {
+              clearInterval(checkInterval);
+              resolve();
+            }
+            if (checkInterruption && checkInterruption()) {
+              this.wasInterrupted = true;
+              clearInterval(checkInterval);
+              resolve();
+            }
+          }, 50);
+
+          setTimeout(() => {
+            clearInterval(checkInterval);
+            resolve();
+          }, waitTime);
+        });
+
+        const actualWait = Date.now() - waitStartTime;
+        const totalElapsed = Date.now() - playStartTime;
+        console.log(
+          `${this.config.color}   ⏹️  Sentence ${
+            i + 1
+          } wait done - waited ${actualWait}ms (total elapsed since emit: ${totalElapsed}ms)${RESET_COLOR}`
+        );
+
+        // If interrupted during playback, stop immediately
+        if (this.wasInterrupted) {
+          console.log(
+            `${this.config.color}🛑 INTERRUPTED during sentence ${
+              i + 1
+            } - stopping remaining ${
+              sentences.length - i - 1
+            } sentences${RESET_COLOR}`
+          );
+          this.audioPlaying = false;
+          return false;
+        }
+      }
+
+      this.audioPlaying = false;
+      this.emit("finished");
+      return true;
+    } finally {
+      this.isSpeaking = false;
+      this.audioPlaying = false;
+      this.isActive = false;
+    }
   }
 
   async cleanup() {

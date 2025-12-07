@@ -113,6 +113,7 @@ export class PodcastOrchestrator {
       this.twitchStreamer = new TwitchStreamer({
         streamKey: process.env.TWITCH_STREAM_KEY,
         overlayText: `AI Podcast: ${this.topic}`,
+        enableSubtitles: process.env.ENABLE_SUBTITLES === "true",
       });
       this.twitchStreamer.name = "Twitch";
       await this.twitchStreamer.start();
@@ -131,6 +132,7 @@ export class PodcastOrchestrator {
       this.localPlayer = new LocalAudioPlayer({
         overlayText: `AI Podcast: ${this.topic}`,
         showVideo: true,
+        enableSubtitles: process.env.ENABLE_SUBTITLES === "true",
       });
       this.localPlayer.name = "Local";
       await this.localPlayer.start();
@@ -178,21 +180,6 @@ export class PodcastOrchestrator {
         this.textOverlay.showTypingText(data.name, data.text, data.duration);
       });
 
-      // Add minimal silence padding between speakers
-      agent.on("finished", () => {
-        // Send 200ms of silence for natural pause
-        const silenceBuffer = Buffer.alloc(4800); // 200ms at 24kHz, 16-bit
-        if (this.localPlayer) {
-          this.localPlayer.writeAudio(silenceBuffer);
-        }
-        if (this.twitchStreamer) {
-          this.twitchStreamer.writeAudio(silenceBuffer);
-        }
-        if (sendAudioToTwilioCalls) {
-          sendAudioToTwilioCalls(silenceBuffer);
-        }
-      });
-
       this.agents.push(agent);
     }
 
@@ -211,14 +198,19 @@ export class PodcastOrchestrator {
 
     await this.agentSpeak(
       host,
-      `Introduce yourself and start a conversation about "${
+      `Give a very brief (1-2 sentence) intro and greet ${otherAgent.getName()}. Keep it short and punchy about "${
         this.topic
-      }" with ${otherAgent.getName()}.`
+      }".`
     );
 
-    // Main conversation loop with pipelining
+    // Main conversation loop with pipelining and sentence-by-sentence playback
     let currentSpeakerIdx = 1; // Start with agent B since A just introduced
-    let preGenerated = null; // Pre-generated { text, audio } for next speaker
+    let preGenerated = null; // Pre-generated { text, firstSentenceAudio } for next speaker
+
+    // Interruption checker callback - used by sentence-by-sentence playback
+    const checkInterruption = () => {
+      return this.newsInjector.hasBreakingNews() || this.userInput;
+    };
 
     while (this.isRunning) {
       // ===== CHECK FOR INTERRUPTIONS BEFORE EACH TURN =====
@@ -237,8 +229,7 @@ export class PodcastOrchestrator {
         continue;
       }
 
-      // ===== NORMAL TURN (with pipelining) =====
-      const turnStartTime = Date.now();
+      // ===== NORMAL TURN (with pipelining + sentence-by-sentence playback) =====
       const speaker = this.agents[currentSpeakerIdx];
       const other = this.agents[1 - currentSpeakerIdx];
 
@@ -257,13 +248,15 @@ export class PodcastOrchestrator {
       basePrompt += this.newsInjector.getRegularNewsContext();
       const prompt = this.buildPrompt(basePrompt);
 
-      // Use pre-generated content if available (both text AND audio)
+      // Use pre-generated content if available (text + first sentence audio)
       let responseText;
       let audioPromise;
 
-      if (preGenerated && preGenerated.text && preGenerated.audio) {
+      if (preGenerated && preGenerated.text) {
         console.log(
-          `${speaker.config.color}⚡ Using pre-generated text + audio (had it ready!)${RESET_COLOR}`
+          `${speaker.config.color}⚡ Using pre-generated text${
+            preGenerated.firstSentenceAudio ? " + first sentence audio" : ""
+          }${RESET_COLOR}`
         );
         responseText = preGenerated.text;
         speaker.currentTranscript = responseText;
@@ -274,11 +267,12 @@ export class PodcastOrchestrator {
           content: responseText,
         });
 
-        // Play pre-generated audio (skips TTS entirely!)
+        // Play sentence-by-sentence with interruption checks
         this.currentSpeaker = speaker;
-        audioPromise = speaker.playPreGeneratedAudio(
+        audioPromise = speaker.playPreGeneratedAudioSentenceBySentence(
           responseText,
-          preGenerated.audio
+          preGenerated.firstSentenceAudio,
+          checkInterruption
         );
         preGenerated = null;
       } else {
@@ -291,12 +285,15 @@ export class PodcastOrchestrator {
           content: responseText,
         });
 
-        // Generate TTS + play audio
+        // Play sentence-by-sentence with interruption checks
         this.currentSpeaker = speaker;
-        audioPromise = speaker.playAudio(responseText);
+        audioPromise = speaker.playAudioSentenceBySentence(
+          responseText,
+          checkInterruption
+        );
       }
 
-      // While audio plays, pre-generate next agent's TEXT + AUDIO
+      // While audio plays, pre-generate next agent's TEXT + FIRST SENTENCE AUDIO
       const nextSpeakerIdx = 1 - currentSpeakerIdx;
       const nextSpeaker = this.agents[nextSpeakerIdx];
       let nextBasePrompt = `Continue the conversation with ${speaker.getName()} about ${
@@ -305,7 +302,7 @@ export class PodcastOrchestrator {
       nextBasePrompt += this.newsInjector.getRegularNewsContext();
       const nextPrompt = this.buildPrompt(nextBasePrompt);
 
-      // Pre-generate BOTH text AND audio in parallel with current playback
+      // Pre-generate text AND first sentence audio in parallel with current playback
       let preGenReady = false;
       let preGenReadyTime = null;
       const preGenStartTime = Date.now();
@@ -315,15 +312,20 @@ export class PodcastOrchestrator {
           const text = await nextSpeaker.generateResponse(nextPrompt);
           if (!text) return null;
 
-          // Generate TTS audio too!
+          // Generate TTS for first sentence only (for faster startup)
+          const sentences = nextSpeaker.splitIntoSentences(text);
+          const firstSentence = sentences[0];
+
           console.log(
-            `${nextSpeaker.config.color}🎵 Pre-generating audio...${RESET_COLOR}`
+            `${nextSpeaker.config.color}🎵 Pre-generating first sentence audio...${RESET_COLOR}`
           );
           const ttsStart = Date.now();
-          const audio = await nextSpeaker.tts.synthesize(text);
+          const firstSentenceAudio = await nextSpeaker.tts.synthesize(
+            firstSentence
+          );
           const ttsTime = Date.now() - ttsStart;
           console.log(
-            `${nextSpeaker.config.color}⏱️  Pre-gen TTS: ${ttsTime}ms (${audio.length} bytes)${RESET_COLOR}`
+            `${nextSpeaker.config.color}⏱️  Pre-gen first sentence TTS: ${ttsTime}ms (${firstSentenceAudio.length} bytes)${RESET_COLOR}`
           );
 
           // Mark pre-generation as complete
@@ -335,36 +337,23 @@ export class PodcastOrchestrator {
             }ms${RESET_COLOR}`
           );
 
-          return { text, audio };
+          return { text, firstSentenceAudio };
         } catch (err) {
           console.error("Pre-generation failed:", err.message);
           return null;
         }
       })();
 
-      // Poll for interruptions while audio plays
-      const interruptPoll = setInterval(() => {
-        if (!speaker.isSpeaking && !speaker.audioPlaying) {
-          clearInterval(interruptPoll);
-          return;
-        }
-
-        if (this.newsInjector.hasBreakingNews() || this.userInput) {
-          speaker.interrupt();
-          clearInterval(interruptPoll);
-        }
-      }, 100);
-
-      // Wait for audio to finish
+      // Wait for audio to finish (interruption checks happen inside sentence-by-sentence)
       const audioStartWait = Date.now();
-      await audioPromise;
+      const completed = await audioPromise;
       const audioDoneTime = Date.now();
       console.log(
         `\n🔊 ${
           speaker.config.color
-        }${speaker.getName()} AUDIO DONE${RESET_COLOR} (waited ${
-          audioDoneTime - audioStartWait
-        }ms)`
+        }${speaker.getName()} AUDIO DONE${RESET_COLOR} (${
+          completed ? "completed" : "interrupted"
+        }, waited ${audioDoneTime - audioStartWait}ms)`
       );
       console.log(
         `   Pre-gen ready: ${preGenReady ? "YES ✅" : "NO ⏳"} (ready at ${
@@ -372,10 +361,9 @@ export class PodcastOrchestrator {
         })`
       );
 
-      clearInterval(interruptPoll);
       this.currentSpeaker = null;
 
-      // Get pre-generated content (should be ready by now - both text AND audio)
+      // Get pre-generated content (should be ready by now)
       if (
         !speaker.wasInterrupted &&
         !this.userInput &&
@@ -447,20 +435,29 @@ export class PodcastOrchestrator {
   }
 
   async handleBreakingNews() {
-    const news = this.newsInjector.getNextBreakingNews();
-    console.log(`\n🚨 BREAKING NEWS: ${news}\n`);
+    const newsItem = this.newsInjector.getNextBreakingNews();
+    const newsContent = newsItem.content;
+    console.log(`\n🚨 BREAKING NEWS: ${newsContent}\n`);
+
+    // Immediately interrupt current speaker for hard cut
+    if (this.currentSpeaker) {
+      console.log(
+        `${this.currentSpeaker.config.color}🛑 HARD INTERRUPT - Stopping ${this.currentSpeaker.config.name} immediately!${RESET_COLOR}`
+      );
+      await this.currentSpeaker.interrupt();
+    }
 
     // Add to shared history
     this.sharedHistory.push({
       speaker: "BREAKING NEWS",
-      content: news,
+      content: newsContent,
     });
 
-    // Both agents react to breaking news (no pipelining during interrupts)
+    // Both agents react to breaking news with fast interruption
     for (const agent of this.agents) {
-      await this.agentSpeak(
+      await this.agentSpeakFast(
         agent,
-        `BREAKING NEWS just came in: "${news}". React to this news urgently!`
+        `BREAKING NEWS just came in: "${newsContent}". React to this news urgently!`
       );
 
       // Check if another breaking news came in or user input
@@ -468,9 +465,61 @@ export class PodcastOrchestrator {
     }
   }
 
+  // Fast speak for breaking news - generates text + first sentence audio, then plays with sentence-by-sentence
+  async agentSpeakFast(agent, prompt) {
+    this.currentSpeaker = agent;
+
+    // Build full prompt with history
+    const fullPrompt = this.buildPrompt(prompt);
+
+    // Generate full text response
+    const response = await agent.generateResponse(fullPrompt);
+
+    // Add to shared history
+    this.sharedHistory.push({
+      speaker: agent.getName(),
+      content: response,
+    });
+
+    // Generate first sentence audio only for fast startup
+    const sentences = agent.splitIntoSentences(response);
+    const firstSentence = sentences[0];
+
+    console.log(
+      `${agent.config.color}🎵 Pre-generating first sentence audio for fast interrupt...${RESET_COLOR}`
+    );
+    const ttsStart = Date.now();
+    const firstSentenceAudio = await agent.tts.synthesize(firstSentence);
+    const ttsTime = Date.now() - ttsStart;
+    console.log(
+      `${agent.config.color}⏱️  Pre-gen first sentence TTS: ${ttsTime}ms (${firstSentenceAudio.length} bytes)${RESET_COLOR}`
+    );
+
+    // Now play with sentence-by-sentence (uses pre-generated first sentence)
+    const checkInterruption = () => {
+      return this.newsInjector.hasBreakingNews() || this.userInput;
+    };
+
+    await agent.playPreGeneratedAudioSentenceBySentence(
+      response,
+      firstSentenceAudio,
+      checkInterruption
+    );
+
+    this.currentSpeaker = null;
+  }
+
   async handleUserInput() {
     const comment = this.userInput;
     this.userInput = null;
+
+    // Immediately interrupt current speaker for hard cut
+    if (this.currentSpeaker) {
+      console.log(
+        `${this.currentSpeaker.config.color}🛑 HARD INTERRUPT - Stopping ${this.currentSpeaker.config.name} immediately!${RESET_COLOR}`
+      );
+      await this.currentSpeaker.interrupt();
+    }
 
     // Add to shared history
     this.sharedHistory.push({
