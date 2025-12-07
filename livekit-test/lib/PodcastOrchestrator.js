@@ -11,6 +11,17 @@ import { NewsInjector } from "./NewsInjector.js";
 import { TextOverlayManager } from "./TextOverlay.js";
 import readline from "readline";
 
+// Twilio integration
+let sendAudioToTwilioCalls = null;
+if (process.env.TWILIO_ENABLED === "true") {
+  try {
+    const twilioModule = await import("../twilio-server.js");
+    sendAudioToTwilioCalls = twilioModule.sendAudioToTwilioCalls;
+  } catch (err) {
+    console.warn("⚠️  Twilio integration not available:", err.message);
+  }
+}
+
 const LOCAL_MODE = process.env.LOCAL_MODE === "true";
 const TWITCH_MODE = process.env.TWITCH_MODE === "true";
 const RESET_COLOR = "\x1b[0m";
@@ -170,6 +181,10 @@ export class PodcastOrchestrator {
           if (this.audioSource) {
             this.audioSource.captureFrame(chunk);
           }
+          // Send to Twilio calls
+          if (sendAudioToTwilioCalls) {
+            sendAudioToTwilioCalls(chunk);
+          }
         }
       });
 
@@ -187,6 +202,9 @@ export class PodcastOrchestrator {
         }
         if (this.twitchStreamer) {
           this.twitchStreamer.writeAudio(silenceBuffer);
+        }
+        if (sendAudioToTwilioCalls) {
+          sendAudioToTwilioCalls(silenceBuffer);
         }
       });
 
@@ -373,6 +391,9 @@ export class PodcastOrchestrator {
           }
           if (this.twitchStreamer) {
             this.twitchStreamer.writeAudio(silenceBuffer);
+          }
+          if (sendAudioToTwilioCalls) {
+            sendAudioToTwilioCalls(silenceBuffer);
           }
         }
       }

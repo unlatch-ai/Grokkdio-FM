@@ -128,9 +128,19 @@ async function main() {
     }\n`
   );
 
+  // Start Twilio server if enabled
+  if (process.env.TWILIO_ENABLED === "true") {
+    console.log("📞 Starting Twilio integration...");
+    await import("./twilio-server.js");
+  }
+
   if (LOCAL_MODE || process.env.TWITCH_MODE === "true") {
     // Run locally or stream to Twitch
     const podcast = new PodcastOrchestrator(AGENT_CONFIGS, topic);
+    
+    // Make orchestrator globally available for Twilio integration
+    global.podcastOrchestrator = podcast;
+    
     await podcast.initialize(null);
     await podcast.runPodcast();
     process.exit(0);
