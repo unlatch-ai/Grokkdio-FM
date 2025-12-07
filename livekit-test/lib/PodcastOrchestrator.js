@@ -36,6 +36,7 @@ export class PodcastOrchestrator {
     this.textOverlay = null; // Will be initialized after localPlayer
     this.sharedHistory = []; // Shared conversation history between agents
     this.pendingTrendPrompt = null; // Trend prompt waiting to be injected
+    this.pendingTrendTweet = null; // Tweet to show with the pending trend
   }
 
   setupInput() {
@@ -94,7 +95,7 @@ export class PodcastOrchestrator {
         // Get the active player
         const player = this.twitchStreamer || this.localPlayer;
         if (player) {
-          showTweetOverlay(player, tweetUrl, { duration: 90000 })
+          showTweetOverlay(player, tweetUrl, { duration: 120000 })
             .then(() => console.log("✅ Tweet overlay shown"))
             .catch((err) => console.error("❌ Tweet error:", err.message));
         } else {
@@ -107,6 +108,7 @@ export class PodcastOrchestrator {
           .then((result) => {
             if (result) {
               this.pendingTrendPrompt = result.prompt;
+              this.pendingTrendTweet = result.tweet; // Store tweet with prompt
               console.log(
                 `\n🔥 Trend ready: "${result.trend}" - will inject on next turn`
               );
@@ -227,9 +229,10 @@ export class PodcastOrchestrator {
     }
 
     // Listen for trend ready events (from auto-fetch)
-    this.trendInjector.on("trendReady", ({ trend, prompt }) => {
+    this.trendInjector.on("trendReady", ({ trend, prompt, tweet }) => {
       console.log(`\n🔥 Auto-trend ready: "${trend}"`);
       this.pendingTrendPrompt = prompt;
+      this.pendingTrendTweet = tweet; // Store tweet with prompt to keep them in sync
     });
 
     // Start auto-fetching trends every 5 minutes (but not at minute 0)
@@ -250,16 +253,18 @@ export class PodcastOrchestrator {
 
     // Opening - first agent introduces (no pipelining for first turn)
     const host = this.agents[0];
-    const otherAgent = this.agents[1];
+    const coHostNames = this.agents
+      .slice(1)
+      .map((a) => a.getName())
+      .join(" and ");
 
     await this.agentSpeak(
       host,
-      `Give a very brief (1-2 sentence) intro and greet ${otherAgent.getName()}. Keep it short and punchy about "${
-        this.topic
-      }".`
+      `Give a very brief (1-2 sentence) intro and greet ${coHostNames}. Keep it short and punchy about "${this.topic}".`
     );
 
     // Main conversation loop with pipelining and sentence-by-sentence playback
+    const numAgents = this.agents.length;
     let currentSpeakerIdx = 1; // Start with agent B since A just introduced
     let preGenerated = null; // Pre-generated { text, firstSentenceAudio } for next speaker
 
@@ -295,7 +300,11 @@ export class PodcastOrchestrator {
       // ===== NORMAL TURN (with pipelining) =====
       const turnStartTime = Date.now();
       const speaker = this.agents[currentSpeakerIdx];
-      const other = this.agents[1 - currentSpeakerIdx];
+      // Get all other agent names for context
+      const otherNames = this.agents
+        .filter((_, idx) => idx !== currentSpeakerIdx)
+        .map((a) => a.getName())
+        .join(" and ");
 
       console.log(
         `\n${"=".repeat(
@@ -306,9 +315,7 @@ export class PodcastOrchestrator {
       );
 
       // Build prompt with shared history context
-      let basePrompt = `Continue the conversation with ${other.getName()} about ${
-        this.topic
-      }. Respond to what was just said.`;
+      let basePrompt = `Continue the conversation with ${otherNames} about ${this.topic}. Respond to what was just said.`;
       basePrompt += this.newsInjector.getRegularNewsContext();
       const prompt = this.buildPrompt(basePrompt);
 
@@ -358,11 +365,13 @@ export class PodcastOrchestrator {
       }
 
       // While audio plays, pre-generate next agent's TEXT + FIRST SENTENCE AUDIO
-      const nextSpeakerIdx = 1 - currentSpeakerIdx;
+      const nextSpeakerIdx = (currentSpeakerIdx + 1) % numAgents;
       const nextSpeaker = this.agents[nextSpeakerIdx];
-      let nextBasePrompt = `Continue the conversation with ${speaker.getName()} about ${
-        this.topic
-      }. Respond to what was just said.`;
+      const nextOtherNames = this.agents
+        .filter((_, idx) => idx !== nextSpeakerIdx)
+        .map((a) => a.getName())
+        .join(" and ");
+      let nextBasePrompt = `Continue the conversation with ${nextOtherNames} about ${this.topic}. Respond to what was just said.`;
       nextBasePrompt += this.newsInjector.getRegularNewsContext();
       const nextPrompt = this.buildPrompt(nextBasePrompt);
 
@@ -517,7 +526,7 @@ export class PodcastOrchestrator {
       content: newsContent,
     });
 
-    // Both agents react to breaking news with fast interruption
+    // All agents react to breaking news with fast interruption
     for (const agent of this.agents) {
       await this.agentSpeakFast(
         agent,
@@ -608,7 +617,9 @@ export class PodcastOrchestrator {
 
   async handleTrendInjection() {
     const prompt = this.pendingTrendPrompt;
+    const tweet = this.pendingTrendTweet; // Get the tweet that was stored with this prompt
     this.pendingTrendPrompt = null;
+    this.pendingTrendTweet = null;
 
     console.log(`\n📊 TRENDING TOPIC INJECTION\n`);
 
@@ -621,7 +632,8 @@ export class PodcastOrchestrator {
     // Show the first tweet on overlay FIRST, then wait a moment before talking
     console.log("📸 Displaying tweet first...");
     try {
-      await this.trendInjector.showNextTweet();
+      // Pass the tweet that was stored with this prompt (avoids race condition)
+      await this.trendInjector.showTweet(tweet);
       // Small delay to let viewers see the tweet before talking starts
       await new Promise((resolve) => setTimeout(resolve, 1500));
     } catch (err) {
@@ -632,7 +644,7 @@ export class PodcastOrchestrator {
     const firstAgent = this.agents[0];
     await this.agentSpeak(
       firstAgent,
-      `${prompt}\n\nYou just saw this tweet trending! React to it - what's your take?`
+      `${prompt}\n\nYou just saw this tweet trending! React to it. And when you start to react to it the very first thing you say is "Jamie pull up this tweet" - what's your take?`
     );
 
     // Check for interrupts
@@ -641,19 +653,20 @@ export class PodcastOrchestrator {
       return;
     }
 
-    // Show next tweet before second agent speaks
-    if (this.trendInjector.tweetQueue.length > 0) {
-      console.log("📸 Showing next tweet...");
-      this.trendInjector.showNextTweet().catch(() => {});
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
+    // Remaining agents respond in order
+    for (let i = 1; i < this.agents.length; i++) {
+      const agent = this.agents[i];
+      await this.agentSpeak(
+        agent,
+        `${prompt}\n\nYour co-hosts just gave their takes. Now respond - agree, argue, or add your own perspective!`
+      );
 
-    // Second agent responds
-    const secondAgent = this.agents[1];
-    await this.agentSpeak(
-      secondAgent,
-      `${prompt}\n\nYour co-host just gave their take. Now respond - agree, argue, or add your own conspiracy/explanation!`
-    );
+      // Check for interrupts between each agent
+      if (this.newsInjector.hasBreakingNews() || this.userInput) {
+        this.trendInjector.clearTrend();
+        return;
+      }
+    }
 
     // Clear the trend after discussion (keeps it in discussedTrends)
     this.trendInjector.clearTrend();

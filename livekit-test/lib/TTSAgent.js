@@ -68,7 +68,9 @@ You: "[sighs heavily] Look, [rolls eyes] that's not how it works... [laughs] at 
 REMEMBER: EVERY response must have [emotion brackets] like the examples above!`;
 
     // System prompt
-    this.systemPrompt = `${config.personality}${fewShotExamples}\n\nTopic: ${topic}. You're in a lively multi-person podcast discussion. ALWAYS use [emotion brackets] in your responses.`;
+    this.systemPrompt = `${config.personality}${fewShotExamples}\n\nTopic: ${topic}. You're in a lively multi-person podcast discussion. ALWAYS use [emotion brackets] in your responses.
+
+IMPORTANT: Pay attention to the [emotion brackets] in your co-host's dialogue! React to their energy - if they [whisper], maybe you [whisper back] or make fun of them for whispering or if they [shout] you can [shout] back at them or make fun of them for shouting`;
   }
 
   async initialize() {

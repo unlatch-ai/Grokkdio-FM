@@ -25,12 +25,13 @@ export class TrendInjector extends EventEmitter {
     super();
     this.autoInterval = config.autoIntervalMinutes || 2;
     this.personality = config.personality || DEFAULT_PERSONALITY;
+    this.minTweetCount = config.minTweetCount || 20000; // Minimum tweets for a trend to be considered
     this.player = null; // Set by PodcastOrchestrator
     this.isProcessing = false;
     this.currentTrend = null;
     this.currentTweets = [];
     this.currentResearch = null; // Background research from AI
-    this.tweetQueue = [];
+    this.currentTweet = null; // Single tweet to display per trend
     this.autoTimer = null;
     this.startTime = Date.now();
 
@@ -118,24 +119,43 @@ export class TrendInjector extends EventEmitter {
     try {
       // 1. Get top trends
       const allTrends = await getTopTrends(15);
+      console.log("All trends:", allTrends);
 
       // Track all observed trends
       allTrends.forEach((t) => this.observedTrends.add(t.trend_name));
 
-      // Filter out already discussed trends
+      // Filter out trends with low tweet count and already discussed trends
       let trends = allTrends.filter(
-        (t) => !this.discussedTrends.has(t.trend_name)
+        (t) =>
+          (t.tweet_count || 0) >= this.minTweetCount &&
+          !this.discussedTrends.has(t.trend_name)
       );
 
-      // If all trends have been discussed, reset and allow repeats
+      // If all qualifying trends have been discussed, reset and allow repeats (but still filter by tweet count)
       if (trends.length === 0) {
-        console.log("🔄 All trends discussed, resetting history...");
+        console.log("🔄 All qualifying trends discussed, resetting history...");
         this.discussedTrends.clear();
-        trends = allTrends;
+        trends = allTrends.filter(
+          (t) => (t.tweet_count || 0) >= this.minTweetCount
+        );
       }
 
+      // If still no trends qualify (all below minimum tweet count), skip this cycle
+      if (trends.length === 0) {
+        console.log(
+          `⚠️ No trends meet minimum tweet count (${this.minTweetCount.toLocaleString()}), skipping...`
+        );
+        this.isProcessing = false;
+        return null;
+      }
+
+      const filteredByCount = allTrends.filter(
+        (t) => (t.tweet_count || 0) < this.minTweetCount
+      ).length;
       console.log(
-        `📋 Found ${allTrends.length} trends (${trends.length} new):`
+        `📋 Found ${allTrends.length} trends (${
+          trends.length
+        } qualifying, ${filteredByCount} filtered for <${this.minTweetCount.toLocaleString()} tweets):`
       );
       trends.slice(0, 5).forEach((t, i) => {
         const count = t.tweet_count
@@ -155,34 +175,53 @@ export class TrendInjector extends EventEmitter {
       this.discussedTrends.add(selectedTrend);
       console.log(`📝 Trends discussed so far: ${this.discussedTrends.size}`);
 
-      // 3. Get tweets for the trend
-      const tweets = await getTweetsForTrend(selectedTrend, 5);
+      // 3. Get tweets for the trend (fetch 200 to find the best ones)
+      const tweets = await getTweetsForTrend(selectedTrend, 1000);
       console.log(`🐦 Found ${tweets.length} tweets`);
 
-      // 4. Research background with AI (using personality)
+      // 4. Select top tweets by views - top 3 for research, top 1 for display
+      const topTweets = this._selectTopTweets(tweets, 3);
+      const topTweet = topTweets[0] || null;
+      if (topTweet) {
+        const views = topTweet.public_metrics?.impression_count || 0;
+        console.log(
+          `👁️  Top tweet has ${views.toLocaleString()} views (using top ${
+            topTweets.length
+          } for research)`
+        );
+      }
+
+      // 5. Research background with AI (using only top 3 tweets)
       console.log(`\n🔍 Researching background with ${personality.name}...`);
-      const research = await this._researchTrend(selectedTrend, tweets);
+      const research = await this._researchTrend(selectedTrend, topTweets);
       console.log(`✨ Research complete`);
 
-      // 5. Store for use
+      // 6. Store for use (top tweets for research/prompt, top 1 for display)
       this.currentTrend = selectedTrend;
-      this.currentTweets = tweets;
+      this.currentTweets = topTweets; // Store only top tweets for prompts
       this.currentResearch = research;
-      this.tweetQueue = [...tweets];
+      this.currentTweet = topTweet; // Single tweet to display
 
-      // 6. Build prompt for agents (includes research)
-      const prompt = this._buildTrendPrompt(selectedTrend, tweets, research);
+      // 7. Build prompt for agents (includes research, uses top tweets)
+      const prompt = this._buildTrendPrompt(selectedTrend, topTweets, research);
 
-      // 7. Emit event for PodcastOrchestrator to inject
+      // 8. Emit event for PodcastOrchestrator to inject
       this.emit("trendReady", {
         trend: selectedTrend,
-        tweets,
+        tweets: topTweets, // Only pass top tweets
+        tweet: topTweet, // Single tweet for display
         research,
         prompt,
       });
 
       this.isProcessing = false;
-      return { trend: selectedTrend, tweets, research, prompt };
+      return {
+        trend: selectedTrend,
+        tweets: topTweets,
+        tweet: topTweet,
+        research,
+        prompt,
+      };
     } catch (err) {
       console.error("❌ Error fetching trends:", err.message);
       this.isProcessing = false;
@@ -191,24 +230,27 @@ export class TrendInjector extends EventEmitter {
   }
 
   /**
-   * Show the next tweet in queue on overlay
+   * Show a tweet on overlay
+   * @param {object} [tweet] - Optional tweet to show (uses currentTweet if not provided)
    * @returns {Promise<boolean>} True if a tweet was shown
    */
-  async showNextTweet() {
+  async showTweet(tweet = null) {
     if (!this.player) {
       console.warn("No player set for tweet overlay");
       return false;
     }
 
-    if (this.tweetQueue.length === 0) {
-      console.log("No tweets in queue");
+    // Use provided tweet or fall back to currentTweet
+    const tweetToShow = tweet || this.currentTweet;
+
+    if (!tweetToShow) {
+      console.log("No tweet to show");
       return false;
     }
 
-    const tweet = this.tweetQueue.shift();
-    const tweetUrl = getTweetUrl(tweet.id, tweet.author_id);
+    const tweetUrl = getTweetUrl(tweetToShow.id, tweetToShow.author_id);
 
-    console.log(`\n📸 Showing tweet: ${tweet.text.substring(0, 50)}...`);
+    console.log(`\n📸 Showing tweet: ${tweetToShow.text.substring(0, 50)}...`);
 
     try {
       // Capture tweet as image
@@ -227,6 +269,25 @@ export class TrendInjector extends EventEmitter {
       console.error("Error showing tweet:", err.message);
       return false;
     }
+  }
+
+  /**
+   * Select the top N tweets with the most views (impressions)
+   * @param {Array} tweets - List of tweets
+   * @param {number} count - Number of top tweets to return
+   * @returns {Array} Top tweets sorted by views (highest first)
+   */
+  _selectTopTweets(tweets, count = 3) {
+    if (!tweets || tweets.length === 0) return [];
+
+    // Sort by impression count (highest first)
+    const sorted = [...tweets].sort((a, b) => {
+      const viewsA = a.public_metrics?.impression_count || 0;
+      const viewsB = b.public_metrics?.impression_count || 0;
+      return viewsB - viewsA;
+    });
+
+    return sorted.slice(0, count);
   }
 
   /**
@@ -259,7 +320,7 @@ export class TrendInjector extends EventEmitter {
 
 IMPORTANT: You must respond in this exact format:
 SELECTED: [exact trend name from the list]
-REASONING: [your reasoning in 1-2 sentences, in character]
+REASONING: [your reasoning in 1-2 sentences, in character] Should pick edgy, controversial trends, should not pick Muhammad Qasim.
 
 The trend name must match EXACTLY as written in the list (including hashtags, capitalization, etc).`;
 
@@ -414,7 +475,7 @@ ${research}`;
 
     prompt += `
 
-React to this trending topic! Debate it, share your takes, and get heated about it. Reference the tweets and research!`;
+When introducing this trend, say "Jamie pull up this tweet" to signal the tweet should be shown on screen. Then react to the trending topic! Debate it, share your takes, and get heated about it. Reference the tweets and research!`;
 
     return prompt;
   }
@@ -437,7 +498,7 @@ React to this trending topic! Debate it, share your takes, and get heated about 
    * @returns {boolean}
    */
   hasPendingTrend() {
-    return this.currentTrend !== null && this.currentTweets.length > 0;
+    return this.currentTrend !== null;
   }
 
   /**
@@ -447,7 +508,7 @@ React to this trending topic! Debate it, share your takes, and get heated about 
     this.currentTrend = null;
     this.currentTweets = [];
     this.currentResearch = null;
-    this.tweetQueue = [];
+    this.currentTweet = null;
   }
 
   /**

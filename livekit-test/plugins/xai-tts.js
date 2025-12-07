@@ -17,7 +17,7 @@ export class XAITTSPlugin extends EventEmitter {
     this.channels = 1; // mono
     this.bitsPerSample = 16; // s16le
     this.connectionTimeout = config.connectionTimeout || 10000; // 10s connection timeout
-    this.responseTimeout = config.responseTimeout || 20000; // 20s total response timeout
+    this.responseTimeout = config.responseTimeout || 35000; // 35s total response timeout
   }
 
   /**

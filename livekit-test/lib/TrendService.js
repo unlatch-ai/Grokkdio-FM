@@ -64,56 +64,91 @@ export async function getTopTrends(maxTrends = 10) {
 /**
  * Get tweets for a specific trend
  * @param {string} trendName - The trend to search for
- * @param {number} maxResults - Maximum number of tweets
+ * @param {number} maxResults - Maximum number of tweets (supports up to 200 via pagination)
  * @returns {Promise<Tweet[]>}
  */
-export async function getTweetsForTrend(trendName, maxResults = 10) {
+export async function getTweetsForTrend(trendName, maxResults = 1000) {
   const query = `"${trendName}" lang:en -is:retweet`;
-  const params = new URLSearchParams({
-    query,
-    max_results: String(Math.max(10, maxResults)), // API minimum is 10
-    "tweet.fields": "created_at,author_id,public_metrics,text",
-  });
+  const allTweets = [];
+  let nextToken = null;
 
-  const url = `${X_API_BASE}/tweets/search/recent?${params.toString()}`;
+  // API max is 100 per request, paginate if needed
+  while (allTweets.length < maxResults) {
+    const remaining = maxResults - allTweets.length;
+    const count = Math.min(100, Math.max(10, remaining));
 
-  const response = await fetchWithAuth(url);
+    const params = new URLSearchParams({
+      query,
+      max_results: String(count),
+      "tweet.fields": "created_at,author_id,public_metrics,text",
+    });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Failed to fetch tweets: ${response.status} - ${text}`);
+    if (nextToken) {
+      params.set("next_token", nextToken);
+    }
+
+    const url = `${X_API_BASE}/tweets/search/recent?${params.toString()}`;
+    const response = await fetchWithAuth(url);
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Failed to fetch tweets: ${response.status} - ${text}`);
+    }
+
+    const data = await response.json();
+    const tweets = data.data || [];
+    allTweets.push(...tweets);
+
+    // Check for more pages
+    nextToken = data.meta?.next_token;
+    if (!nextToken || tweets.length === 0) break;
   }
 
-  const data = await response.json();
-
-  return data.data || [];
+  return allTweets;
 }
 
 /**
  * Search tweets by query
  * @param {string} query - Search query
- * @param {number} maxResults - Maximum number of tweets
+ * @param {number} maxResults - Maximum number of tweets (supports up to 200 via pagination)
  * @returns {Promise<Tweet[]>}
  */
-export async function searchTweets(query, maxResults = 10) {
-  const params = new URLSearchParams({
-    query: `${query} lang:en -is:retweet`,
-    max_results: String(Math.max(10, maxResults)),
-    "tweet.fields": "created_at,author_id,public_metrics,text",
-  });
+export async function searchTweets(query, maxResults = 100) {
+  const fullQuery = `${query} lang:en -is:retweet`;
+  const allTweets = [];
+  let nextToken = null;
 
-  const url = `${X_API_BASE}/tweets/search/recent?${params.toString()}`;
+  while (allTweets.length < maxResults) {
+    const remaining = maxResults - allTweets.length;
+    const count = Math.min(100, Math.max(10, remaining));
 
-  const response = await fetchWithAuth(url);
+    const params = new URLSearchParams({
+      query: fullQuery,
+      max_results: String(count),
+      "tweet.fields": "created_at,author_id,public_metrics,text",
+    });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Failed to search tweets: ${response.status} - ${text}`);
+    if (nextToken) {
+      params.set("next_token", nextToken);
+    }
+
+    const url = `${X_API_BASE}/tweets/search/recent?${params.toString()}`;
+    const response = await fetchWithAuth(url);
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Failed to search tweets: ${response.status} - ${text}`);
+    }
+
+    const data = await response.json();
+    const tweets = data.data || [];
+    allTweets.push(...tweets);
+
+    nextToken = data.meta?.next_token;
+    if (!nextToken || tweets.length === 0) break;
   }
 
-  const data = await response.json();
-
-  return data.data || [];
+  return allTweets;
 }
 
 /**

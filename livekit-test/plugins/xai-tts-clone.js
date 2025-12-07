@@ -29,7 +29,7 @@ export class XAITTSClonePlugin extends EventEmitter {
     this.initialized = false;
 
     // Timeout for API calls (voice clone can be slower)
-    this.timeout = config.timeout || 20000; // 20s default timeout (most succeed in 5-8s)
+    this.timeout = config.timeout || 35000; // 35s default timeout (most succeed in 5-8s)
   }
 
   /**
