@@ -41,9 +41,23 @@ app.use(express.json());
 /**
  * Twilio webhook for incoming calls
  * Returns TwiML to connect the call to our WebSocket stream
+ * Only allows 1 caller at a time
  */
 app.post("/voice", (req, res) => {
   console.log("📞 Incoming call from:", req.body.From);
+
+  // Check if someone is already connected
+  if (activeConnections.size > 0) {
+    console.log("⚠️ Rejecting call - another caller is already connected");
+    const rejectTwiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>Sorry, someone else is already on the line. Please try again later.</Say>
+  <Hangup/>
+</Response>`;
+    res.type("text/xml");
+    res.send(rejectTwiml);
+    return;
+  }
 
   // Use Twilio's Media Stream with built-in transcription
   // transcriptionTrack="inbound_track" enables real-time STT on caller audio
