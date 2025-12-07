@@ -16,6 +16,7 @@
     "tech-podcast-local": "node src/scenarios/tech-podcast-local.js",
     "interactive": "node src/scenarios/interactive-podcast.js",
     "interruptible": "node src/scenarios/interruptible-podcast.js",
+    "preview": "node src/scenarios/local-preview.js",
     "comedy": "node src/scenarios/comedy-show.js",
     "debate": "node src/scenarios/debate.js",
     "news": "node src/scenarios/news-show.js"
