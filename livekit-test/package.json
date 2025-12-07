@@ -1,0 +1,32 @@
+{
+  "name": "livekit-podcast-demo",
+  "version": "1.0.0",
+  "description": "Multi-agent podcast demo using LiveKit and XAI (Grok)",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "LOCAL_MODE=true node index.js",
+    "dev": "LOCAL_MODE=true node --watch index.js",
+    "twitch": "TWITCH_MODE=true node index.js",
+    "livekit": "node index.js"
+  },
+  "keywords": [
+    "livekit",
+    "xai",
+    "grok",
+    "podcast",
+    "ai-agents",
+    "tts"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@livekit/agents": "^0.3.0",
+    "@livekit/rtc-node": "^0.10.1",
+    "dotenv": "^16.4.5",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1"
+  }
+}
