@@ -26,6 +26,7 @@
     "@livekit/rtc-node": "^0.10.1",
     "dotenv": "^16.4.5",
     "express": "^4.22.1",
+    "form-data": "^4.0.5",
     "ws": "^8.18.0"
   },
   "devDependencies": {

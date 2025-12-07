@@ -29,7 +29,7 @@ export class XAITTSClonePlugin extends EventEmitter {
     this.initialized = false;
 
     // Timeout for API calls (voice clone can be slower)
-    this.timeout = config.timeout || 30000; // 30s default timeout
+    this.timeout = config.timeout || 20000; // 20s default timeout (most succeed in 5-8s)
   }
 
   /**
@@ -138,12 +138,11 @@ export class XAITTSClonePlugin extends EventEmitter {
           `Voice clone API timed out after ${this.timeout}ms`
         );
 
-        // Retry on timeout
+        // Retry on timeout - retry immediately without delay
         if (retries > 0) {
           console.log(
-            `⚠️  Voice clone timeout, retrying... (${retries} retries left)`
+            `⚠️  Voice clone timeout, retrying immediately... (${retries} retries left)`
           );
-          await new Promise((r) => setTimeout(r, 2000));
           return this.synthesize(text, retries - 1);
         }
 

@@ -39,18 +39,54 @@ app.use(express.json());
 app.post('/voice', (req, res) => {
   console.log('📞 Incoming call from:', req.body.From);
   
+  // Use Twilio's Media Stream with built-in transcription
+  // transcriptionTrack="inbound_track" enables real-time STT on caller audio
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>Welcome to the A I podcast. You can speak anytime to join the conversation.</Say>
   <Connect>
     <Stream url="wss://${req.headers.host}/media-stream">
       <Parameter name="From" value="${req.body.From}" />
+      <Transcription track="inbound_track" statusCallbackUrl="https://${req.headers.host}/transcription" />
     </Stream>
   </Connect>
 </Response>`;
 
   res.type('text/xml');
   res.send(twiml);
+});
+
+/**
+ * Twilio Transcription webhook
+ * Called when Twilio's real-time transcription produces results
+ */
+app.post('/transcription', (req, res) => {
+  const event = req.body.TranscriptionEvent;
+  const text = req.body.TranscriptionText;
+  const trackName = req.body.Track;
+  
+  // Log all transcription events
+  console.log(`🎙️ Twilio transcription event: ${event}`);
+  
+  if (event === 'transcription-content' && text && text.trim()) {
+    console.log(`📝 Twilio STT: "${text}"`);
+    
+    // Get caller number from active connections
+    let callerNumber = 'Unknown';
+    for (const [, conn] of activeConnections) {
+      if (conn.callerNumber) {
+        callerNumber = conn.callerNumber;
+        break;
+      }
+    }
+    
+    // Inject into podcast - fire and forget, don't block
+    if (global.podcastOrchestrator) {
+      global.podcastOrchestrator.userInput = `[CALLER ${callerNumber}]: ${text}`;
+    }
+  }
+  
+  res.sendStatus(200);
 });
 
 /**
@@ -145,11 +181,11 @@ wss.on('connection', (ws) => {
                 }
               }
               
-              // Collect speech audio
+              // Collect speech audio (store raw mulaw for STT, PCM for broadcast)
               if (connection.isSpeaking) {
-                connection.speechBuffer.push(pcmData);
+                connection.speechBuffer.push(mulawData); // Store mulaw for Realtime API
                 
-                // Also broadcast caller audio to Twitch/local
+                // Also broadcast caller audio to Twitch/local (needs PCM)
                 broadcastCallerAudio(pcmData);
               }
             } else {
@@ -179,7 +215,19 @@ wss.on('connection', (ws) => {
           
         case 'stop':
           console.log(`🛑 Stream stopped: ${streamSid}`);
-          activeConnections.delete(streamSid);
+          if (activeConnections.has(streamSid)) {
+            const connection = activeConnections.get(streamSid);
+            const callerNumber = connection.callerNumber || 'Unknown';
+            console.log(`📞 Caller ${callerNumber} disconnected`);
+            
+            // Notify orchestrator about caller leaving
+            if (global.podcastOrchestrator) {
+              global.podcastOrchestrator.userInput = `[CALLER ${callerNumber} DISCONNECTED]: The caller has hung up and left the show.`;
+              console.log(`📢 Notified orchestrator: Caller ${callerNumber} disconnected`);
+            }
+            
+            activeConnections.delete(streamSid);
+          }
           break;
       }
     } catch (err) {
@@ -189,7 +237,8 @@ wss.on('connection', (ws) => {
   
   ws.on('close', () => {
     console.log('🔌 WebSocket closed');
-    if (streamSid) {
+    // Cleanup any remaining connection (fallback if 'stop' wasn't received)
+    if (streamSid && activeConnections.has(streamSid)) {
       activeConnections.delete(streamSid);
     }
   });
@@ -418,98 +467,115 @@ function boostVolume(pcmBuffer, gain) {
 
 /**
  * Process caller speech - transcribe and inject into podcast
- * Input: 8kHz PCM from Twilio
+ * Input: mulaw audio buffer from Twilio (base64 chunks collected)
+ * Fire-and-forget - doesn't block the main flow
  */
-async function processCallerSpeech(pcmBuffer, callerNumber) {
-  try {
-    // Upsample from 8kHz to 16kHz for XAI STT (double each sample)
-    const upsampled = Buffer.alloc(pcmBuffer.length * 2);
-    for (let i = 0; i < pcmBuffer.length; i += 2) {
-      const sample = pcmBuffer.readInt16LE(i);
-      const outIdx = i * 2;
-      upsampled.writeInt16LE(sample, outIdx);
-      upsampled.writeInt16LE(sample, outIdx + 2);
-    }
-    
-    // Transcribe using XAI (expects 16kHz)
-    const transcription = await transcribeAudio(upsampled);
-    
-    if (transcription && transcription.trim()) {
-      console.log(`📝 Caller said: "${transcription}"`);
-      
-      // Inject as user input to podcast
-      if (global.podcastOrchestrator) {
-        global.podcastOrchestrator.userInput = `[CALLER ${callerNumber}]: ${transcription}`;
-      }
-    }
-  } catch (err) {
+function processCallerSpeech(mulawBuffer, callerNumber) {
+  // Fire and forget - don't await
+  transcribeAsync(mulawBuffer, callerNumber).catch(err => {
     console.error('Error processing caller speech:', err.message);
+  });
+}
+
+/**
+ * Async transcription - runs in background
+ */
+async function transcribeAsync(mulawBuffer, callerNumber) {
+  console.log(`🎙️ Transcribing ${mulawBuffer.length} bytes (async)...`);
+  const transcription = await transcribeWithRealtimeAPI(mulawBuffer);
+  
+  if (transcription && transcription.trim()) {
+    console.log(`📝 Caller ${callerNumber}: "${transcription}"`);
+    
+    // Inject as user input to podcast
+    if (global.podcastOrchestrator) {
+      global.podcastOrchestrator.userInput = `[CALLER ${callerNumber}]: ${transcription}`;
+    }
+  } else {
+    console.log(`🎙️ No speech detected from ${callerNumber}`);
   }
 }
 
 /**
- * Transcribe audio using XAI streaming WebSocket API
- * Audio format: PCM linear16, 16kHz, mono
+ * Transcribe audio using XAI Realtime API with native PCMU support
+ * Based on telephony example - uses input_audio_buffer.append
  */
-async function transcribeAudio(pcmBuffer) {
+async function transcribeWithRealtimeAPI(mulawBuffer) {
   try {
-    const baseUrl = process.env.XAI_BASE_URL || 'https://api.x.ai/v1';
-    const wsUrl = baseUrl.replace('https://', 'wss://').replace('http://', 'ws://');
-    const uri = `${wsUrl}/realtime/audio/transcriptions`;
+    const apiUrl = process.env.XAI_BASE_URL || 'https://api.x.ai/v1';
+    const wsUrl = apiUrl.replace('https://', 'wss://').replace('http://', 'ws://');
+    const uri = `${wsUrl}/realtime`;
     
-    const { default: WS } = await import('ws');
+    const { default: WebSocket } = await import('ws');
     
     return new Promise((resolve) => {
-      const ws = new WS(uri, {
+      const ws = new WebSocket(uri, {
         headers: {
           'Authorization': `Bearer ${process.env.XAI_API_KEY}`,
+          'Content-Type': 'application/json',
         },
       });
       
       let transcript = '';
       let timeout;
+      let sessionConfigured = false;
       
       ws.on('open', () => {
-        // Send config message - XAI expects 16kHz
-        ws.send(JSON.stringify({
-          type: 'config',
-          data: {
-            encoding: 'linear16',
-            sample_rate_hertz: 16000,
-            enable_interim_results: false,
-          },
-        }));
-        
-        // Audio is already 16kHz, send directly in chunks
-        const chunkSize = 3200; // 100ms at 16kHz, 16-bit
-        for (let i = 0; i < pcmBuffer.length; i += chunkSize) {
-          const chunk = pcmBuffer.slice(i, i + chunkSize);
-          ws.send(JSON.stringify({
-            type: 'audio',
-            data: {
-              audio: chunk.toString('base64'),
-            },
-          }));
-        }
-        
-        // Send end of audio signal
-        ws.send(JSON.stringify({ type: 'audio_end' }));
-        
-        // Timeout after 5 seconds
-        timeout = setTimeout(() => {
-          ws.close();
-          resolve(transcript || null);
-        }, 5000);
+        console.log('🎙️ Connected to XAI Realtime API');
       });
       
       ws.on('message', (data) => {
         try {
           const message = JSON.parse(data.toString());
-          if (message.data?.type === 'speech_recognized') {
-            const { transcript: text, is_final } = message.data.data;
-            if (is_final && text) {
-              transcript += text + ' ';
+          
+          if (message.type === 'conversation.created') {
+            // Send session config with PCMU format and transcription enabled
+            ws.send(JSON.stringify({
+              type: 'session.update',
+              session: {
+                audio: {
+                  input: { format: { type: 'audio/pcmu' } },
+                  output: { format: { type: 'audio/pcmu' } },
+                },
+                turn_detection: null, // Disable VAD - we handle it ourselves
+                input_audio_transcription: { model: 'grok-2-public' }, // Enable transcription
+              },
+            }));
+          } else if (message.type === 'session.updated') {
+            sessionConfigured = true;
+            console.log('🎙️ Session configured, sending audio...');
+            
+            // Send audio in chunks (mulaw, 8kHz)
+            const chunkSize = 160; // 20ms at 8kHz mulaw
+            for (let i = 0; i < mulawBuffer.length; i += chunkSize) {
+              const chunk = mulawBuffer.slice(i, Math.min(i + chunkSize, mulawBuffer.length));
+              ws.send(JSON.stringify({
+                type: 'input_audio_buffer.append',
+                audio: chunk.toString('base64'),
+              }));
             }
+            
+            // Commit the audio buffer - this triggers transcription
+            ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+            
+            // DON'T request response.create - we only want transcription, not AI response
+            // Wait for transcription to come back
+            timeout = setTimeout(() => {
+              ws.close();
+              resolve(transcript || null);
+            }, 3000);
+          } else if (message.type === 'conversation.item.input_audio_transcription.completed') {
+            // Got transcription!
+            if (message.transcript) {
+              transcript = message.transcript;
+              console.log(`🎙️ Transcription: "${transcript}"`);
+              clearTimeout(timeout);
+              ws.close();
+            }
+          } else if (message.type === 'input_audio_buffer.committed') {
+            console.log('🎙️ Audio committed, waiting for transcription...');
+          } else if (message.type === 'error') {
+            console.error('🎙️ Realtime API error:', message.error?.message || JSON.stringify(message));
           }
         } catch (err) {
           // Ignore parse errors
@@ -522,7 +588,7 @@ async function transcribeAudio(pcmBuffer) {
       });
       
       ws.on('error', (err) => {
-        console.error('STT WebSocket error:', err.message);
+        console.error('🎙️ Realtime WebSocket error:', err.message);
         clearTimeout(timeout);
         resolve(null);
       });
