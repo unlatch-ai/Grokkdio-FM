@@ -95,7 +95,7 @@ export class PodcastOrchestrator {
         // Get the active player
         const player = this.twitchStreamer || this.localPlayer;
         if (player) {
-          showTweetOverlay(player, tweetUrl, { duration: 120000 })
+          showTweetOverlay(player, tweetUrl, { duration: 100000 })
             .then(() => console.log("✅ Tweet overlay shown"))
             .catch((err) => console.error("❌ Tweet error:", err.message));
         } else {

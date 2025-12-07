@@ -23,7 +23,7 @@ const GROK_API_BASE = "https://api.x.ai/v1";
 export class TrendInjector extends EventEmitter {
   constructor(config = {}) {
     super();
-    this.autoInterval = config.autoIntervalMinutes || 2;
+    this.autoInterval = config.autoIntervalMinutes || 3;
     this.personality = config.personality || DEFAULT_PERSONALITY;
     this.minTweetCount = config.minTweetCount || 20000; // Minimum tweets for a trend to be considered
     this.player = null; // Set by PodcastOrchestrator
@@ -320,7 +320,7 @@ export class TrendInjector extends EventEmitter {
 
 IMPORTANT: You must respond in this exact format:
 SELECTED: [exact trend name from the list]
-REASONING: [your reasoning in 1-2 sentences, in character] Should pick edgy, controversial trends, should not pick Muhammad Qasim.
+REASONING: [your reasoning in 1-2 sentences, in character] Should pick interesting edgy trends!.
 
 The trend name must match EXACTLY as written in the list (including hashtags, capitalization, etc).`;
 
