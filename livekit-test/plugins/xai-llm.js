@@ -13,8 +13,8 @@ export class XAILLMPlugin extends EventEmitter {
       config.baseUrl || process.env.XAI_BASE_URL || "https://api.x.ai/v1";
     this.model = config.model || "grok-3";
     this.temperature = config.temperature || 0.7;
-    this.maxTokens = config.maxTokens || 1024;
-    this.timeout = config.timeout || 20000; // 20s default timeout
+    this.maxTokens = config.maxTokens || 512;
+    this.timeout = config.timeout || 60000; // 60s default timeout
   }
 
   /**

@@ -106,7 +106,9 @@ async function main() {
   // Start Twilio server if enabled
   if (process.env.TWILIO_ENABLED === "true") {
     console.log("📞 Starting Twilio integration...");
-    await import("./twilio-server.js");
+    const { twilioOutput } = await import("./twilio-server.js");
+    const { audioBus } = await import("./lib/AudioBus.js");
+    audioBus.addOutput(twilioOutput);
   }
 
   if (LOCAL_MODE || process.env.TWITCH_MODE === "true") {

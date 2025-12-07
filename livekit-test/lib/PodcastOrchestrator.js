@@ -9,18 +9,8 @@ import { TwitchStreamer } from "../plugins/twitch-streamer.js";
 import { TTSAgent } from "./TTSAgent.js";
 import { NewsInjector } from "./NewsInjector.js";
 import { TextOverlayManager } from "./TextOverlay.js";
+import { audioBus } from "./AudioBus.js";
 import readline from "readline";
-
-// Twilio integration
-let sendAudioToTwilioCalls = null;
-if (process.env.TWILIO_ENABLED === "true") {
-  try {
-    const twilioModule = await import("../twilio-server.js");
-    sendAudioToTwilioCalls = twilioModule.sendAudioToTwilioCalls;
-  } catch (err) {
-    console.warn("⚠️  Twilio integration not available:", err.message);
-  }
-}
 
 const LOCAL_MODE = process.env.LOCAL_MODE === "true";
 const TWITCH_MODE = process.env.TWITCH_MODE === "true";
@@ -117,13 +107,15 @@ export class PodcastOrchestrator {
 
     this.setupInput();
 
-    // Set up audio output
+    // Set up audio output and register with audio bus
     if (TWITCH_MODE) {
       this.twitchStreamer = new TwitchStreamer({
         streamKey: process.env.TWITCH_STREAM_KEY,
         overlayText: `AI Podcast: ${this.topic}`,
       });
+      this.twitchStreamer.name = "Twitch";
       await this.twitchStreamer.start();
+      audioBus.addOutput(this.twitchStreamer);
       console.log("🎥 Twitch stream started");
 
       // Initialize text overlay with Twitch streamer reference
@@ -139,7 +131,9 @@ export class PodcastOrchestrator {
         overlayText: `AI Podcast: ${this.topic}`,
         showVideo: true,
       });
+      this.localPlayer.name = "Local";
       await this.localPlayer.start();
+      audioBus.addOutput(this.localPlayer);
 
       // Initialize text overlay with local player reference
       this.textOverlay = new TextOverlayManager(this.localPlayer);
@@ -150,6 +144,13 @@ export class PodcastOrchestrator {
         name: "podcast-audio",
       });
       console.log("🎵 Audio track published to LiveKit");
+
+      // Wrap audioSource for audio bus
+      const livekitOutput = {
+        name: "LiveKit",
+        writeAudio: (buffer) => this.audioSource.captureFrame(buffer),
+      };
+      audioBus.addOutput(livekitOutput);
 
       // Initialize text overlay without local player
       this.textOverlay = new TextOverlayManager();
@@ -165,28 +166,10 @@ export class PodcastOrchestrator {
     for (const config of this.agentConfigs) {
       const agent = new TTSAgent(config, this.topic);
 
-      // Handle audio output - write in chunks to prevent buffer overflow
+      // Handle audio output - route through audio bus
       agent.on("audio", (audioBuffer) => {
-        // Split large buffers into smaller chunks (100ms each)
-        const chunkSize = 4800; // 100ms at 24kHz, 16-bit
-
-        for (let offset = 0; offset < audioBuffer.length; offset += chunkSize) {
-          const chunk = audioBuffer.slice(offset, offset + chunkSize);
-
-          if (this.localPlayer) {
-            this.localPlayer.writeAudio(chunk);
-          }
-          if (this.twitchStreamer) {
-            this.twitchStreamer.writeAudio(chunk);
-          }
-          if (this.audioSource) {
-            this.audioSource.captureFrame(chunk);
-          }
-          // Send to Twilio calls
-          if (sendAudioToTwilioCalls) {
-            sendAudioToTwilioCalls(chunk);
-          }
-        }
+        // Send to audio bus - it will distribute to all outputs
+        audioBus.writeAudio(audioBuffer);
       });
 
       // Handle subtitles with typewriter effect
@@ -194,7 +177,7 @@ export class PodcastOrchestrator {
         this.textOverlay.showTypingText(data.name, data.text, data.duration);
       });
 
-      // Add minimal silence padding between speakers (music will fill the rest)
+      // Add minimal silence padding between speakers
       agent.on("finished", () => {
         // Send 200ms of silence for natural pause
         const silenceBuffer = Buffer.alloc(4800); // 200ms at 24kHz, 16-bit

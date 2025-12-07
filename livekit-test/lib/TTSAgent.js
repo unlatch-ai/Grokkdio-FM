@@ -119,8 +119,8 @@ REMEMBER: EVERY response must have [emotion brackets] like the examples above!`;
       if (addToHistory) {
         this.conversationHistory.push({ role: "assistant", content: text });
 
-        if (this.conversationHistory.length > 20) {
-          this.conversationHistory = this.conversationHistory.slice(-20);
+        if (this.conversationHistory.length > 12) {
+          this.conversationHistory = this.conversationHistory.slice(-12);
         }
       }
 
@@ -234,9 +234,9 @@ REMEMBER: EVERY response must have [emotion brackets] like the examples above!`;
           { role: "assistant", content: response }
         );
 
-        // Keep history manageable (last 10 messages)
-        if (this.conversationHistory.length > 20) {
-          this.conversationHistory = this.conversationHistory.slice(-20);
+        // Keep history manageable (last 6 messages)
+        if (this.conversationHistory.length > 12) {
+          this.conversationHistory = this.conversationHistory.slice(-12);
         }
       }
 

@@ -25,6 +25,9 @@ const activeConnections = new Map();
 // Event emitter for caller speech
 const callerEvents = new EventEmitter();
 
+// Track if we've sent initial audio
+let hasStartedStreaming = false;
+
 // Middleware
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
@@ -99,6 +102,10 @@ wss.on('connection', (ws) => {
             speechFrames: 0,
             callerNumber
           });
+          
+          // Send initial silence to establish stream
+          const initialSilence = Buffer.alloc(960); // 20ms at 24kHz
+          sendAudioToTwilioCalls(initialSilence);
           
           // Notify orchestrator about new caller
           if (global.podcastOrchestrator) {
@@ -218,6 +225,17 @@ export function sendAudioToTwilioCalls(audioBuffer) {
 }
 
 /**
+ * Queue audio for continuous streaming
+ * @param {Buffer} audioBuffer - PCM audio buffer (24kHz, 16-bit, mono)
+ */
+export function queueAudioForTwilio(audioBuffer) {
+  if (activeConnections.size === 0) return;
+  
+  // Send directly without buffering to avoid latency/corruption
+  sendAudioToTwilioCalls(audioBuffer);
+}
+
+/**
  * Convert PCM to mulaw (simplified version)
  * Twilio expects 8kHz mulaw, so we also need to downsample from 24kHz
  */
@@ -305,33 +323,16 @@ function calculateRMS(pcmBuffer) {
 
 /**
  * Broadcast caller audio to Twitch/local streams
- * Uses linear interpolation for better quality upsampling
+ * Uses cubic interpolation + strong low-pass filter for best quality
  */
 function broadcastCallerAudio(pcmBuffer) {
-  // Upsample from 8kHz to 24kHz (3x) with linear interpolation
-  const inputSamples = pcmBuffer.length / 2;
-  const outputSamples = inputSamples * 3;
-  const upsampled = Buffer.alloc(outputSamples * 2);
+  // Upsample from 8kHz to 24kHz using cubic interpolation
+  const upsampled = upsampleCubic(pcmBuffer);
   
-  for (let i = 0; i < inputSamples; i++) {
-    const sample = pcmBuffer.readInt16LE(i * 2);
-    const nextSample = (i + 1 < inputSamples) 
-      ? pcmBuffer.readInt16LE((i + 1) * 2) 
-      : sample;
-    
-    const outIdx = i * 6; // 3 output samples per input, 2 bytes each
-    
-    // Linear interpolation: sample, sample + 1/3 diff, sample + 2/3 diff
-    const diff = nextSample - sample;
-    upsampled.writeInt16LE(sample, outIdx);
-    upsampled.writeInt16LE(Math.round(sample + diff / 3), outIdx + 2);
-    upsampled.writeInt16LE(Math.round(sample + (diff * 2) / 3), outIdx + 4);
-  }
+  // Apply strong low-pass filter to reduce artifacts
+  const filtered = applyStrongLowPass(upsampled);
   
-  // Apply a simple low-pass filter to reduce aliasing artifacts
-  const filtered = applyLowPassFilter(upsampled);
-  
-  // Boost volume slightly (phone audio tends to be quiet)
+  // Boost volume (phone audio is quiet)
   const boosted = boostVolume(filtered, 1.5);
   
   // Send to local player and Twitch
@@ -346,28 +347,62 @@ function broadcastCallerAudio(pcmBuffer) {
 }
 
 /**
- * Simple low-pass filter to smooth upsampled audio
+ * Cubic interpolation (Catmull-Rom spline) - high quality upsampling
  */
-function applyLowPassFilter(pcmBuffer) {
-  const output = Buffer.alloc(pcmBuffer.length);
-  const samples = pcmBuffer.length / 2;
+function upsampleCubic(pcmBuffer) {
+  const inputSamples = pcmBuffer.length / 2;
+  const output = Buffer.alloc(inputSamples * 6); // 3x, 2 bytes each
   
-  // Simple 3-tap moving average filter
-  for (let i = 0; i < samples; i++) {
-    const prev = i > 0 ? pcmBuffer.readInt16LE((i - 1) * 2) : 0;
-    const curr = pcmBuffer.readInt16LE(i * 2);
-    const next = i < samples - 1 ? pcmBuffer.readInt16LE((i + 1) * 2) : 0;
+  for (let i = 0; i < inputSamples; i++) {
+    const s0 = i > 0 ? pcmBuffer.readInt16LE((i - 1) * 2) : pcmBuffer.readInt16LE(0);
+    const s1 = pcmBuffer.readInt16LE(i * 2);
+    const s2 = (i + 1 < inputSamples) ? pcmBuffer.readInt16LE((i + 1) * 2) : s1;
+    const s3 = (i + 2 < inputSamples) ? pcmBuffer.readInt16LE((i + 2) * 2) : s2;
     
-    // Weighted average: 0.25 * prev + 0.5 * curr + 0.25 * next
-    const filtered = Math.round(prev * 0.25 + curr * 0.5 + next * 0.25);
-    output.writeInt16LE(Math.max(-32768, Math.min(32767, filtered)), i * 2);
+    // Catmull-Rom spline interpolation
+    for (let j = 0; j < 3; j++) {
+      const t = j / 3;
+      const t2 = t * t;
+      const t3 = t2 * t;
+      
+      const sample = 0.5 * (
+        (2 * s1) +
+        (-s0 + s2) * t +
+        (2 * s0 - 5 * s1 + 4 * s2 - s3) * t2 +
+        (-s0 + 3 * s1 - 3 * s2 + s3) * t3
+      );
+      
+      output.writeInt16LE(
+        Math.max(-32768, Math.min(32767, Math.round(sample))),
+        i * 6 + j * 2
+      );
+    }
   }
-  
   return output;
 }
 
 /**
- * Boost audio volume
+ * Strong 5-tap low-pass filter (Gaussian-like)
+ */
+function applyStrongLowPass(pcmBuffer) {
+  const output = Buffer.alloc(pcmBuffer.length);
+  const samples = pcmBuffer.length / 2;
+  
+  for (let i = 0; i < samples; i++) {
+    const s_2 = i > 1 ? pcmBuffer.readInt16LE((i - 2) * 2) : 0;
+    const s_1 = i > 0 ? pcmBuffer.readInt16LE((i - 1) * 2) : 0;
+    const s0 = pcmBuffer.readInt16LE(i * 2);
+    const s1 = i < samples - 1 ? pcmBuffer.readInt16LE((i + 1) * 2) : 0;
+    const s2 = i < samples - 2 ? pcmBuffer.readInt16LE((i + 2) * 2) : 0;
+    
+    const filtered = Math.round(s_2 * 0.1 + s_1 * 0.2 + s0 * 0.4 + s1 * 0.2 + s2 * 0.1);
+    output.writeInt16LE(Math.max(-32768, Math.min(32767, filtered)), i * 2);
+  }
+  return output;
+}
+
+/**
+ * Boost audio volume with clipping protection
  */
 function boostVolume(pcmBuffer, gain) {
   const output = Buffer.alloc(pcmBuffer.length);
@@ -376,10 +411,8 @@ function boostVolume(pcmBuffer, gain) {
   for (let i = 0; i < samples; i++) {
     const sample = pcmBuffer.readInt16LE(i * 2);
     const boosted = Math.round(sample * gain);
-    // Clamp to prevent clipping
     output.writeInt16LE(Math.max(-32768, Math.min(32767, boosted)), i * 2);
   }
-  
   return output;
 }
 
@@ -499,6 +532,17 @@ async function transcribeAudio(pcmBuffer) {
     return null;
   }
 }
+
+/**
+ * Twilio Audio Output Adapter
+ * Implements the audio bus interface
+ */
+export const twilioOutput = {
+  name: 'Twilio',
+  writeAudio: (audioBuffer) => {
+    queueAudioForTwilio(audioBuffer);
+  }
+};
 
 // Export for use in main app
 export { activeConnections };
