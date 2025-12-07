@@ -10,6 +10,7 @@ import { TTSAgent } from "./TTSAgent.js";
 import { NewsInjector } from "./NewsInjector.js";
 import { TextOverlayManager } from "./TextOverlay.js";
 import { showTweetOverlay } from "./TweetOverlay.js";
+import { TrendInjector } from "./TrendInjector.js";
 import { audioBus } from "./AudioBus.js";
 import { sendAudioToTwilioCalls } from "../twilio-server.js";
 import readline from "readline";
@@ -31,8 +32,10 @@ export class PodcastOrchestrator {
     this.userInput = null;
     this.rl = null;
     this.newsInjector = new NewsInjector();
+    this.trendInjector = new TrendInjector({ autoIntervalMinutes: 5 });
     this.textOverlay = null; // Will be initialized after localPlayer
     this.sharedHistory = []; // Shared conversation history between agents
+    this.pendingTrendPrompt = null; // Trend prompt waiting to be injected
   }
 
   setupInput() {
@@ -48,6 +51,7 @@ export class PodcastOrchestrator {
     console.log('   Type "news: <news>" for regular news');
     console.log('   Type "text: <message>" to show overlay text (5s)');
     console.log('   Type "tweet: <url>" to show a tweet overlay (15s)');
+    console.log('   Type "trends" to fetch and inject a trending topic');
     console.log('   Type "quit" to exit\n');
 
     this.rl.on("line", async (input) => {
@@ -96,6 +100,19 @@ export class PodcastOrchestrator {
         } else {
           console.log('⚠️  No video player active for overlay');
         }
+      } else if (trimmed.toLowerCase() === "trends") {
+        console.log('\n📊 Fetching trending topics...');
+        this.trendInjector.fetchAndInject().then(result => {
+          if (result) {
+            this.pendingTrendPrompt = result.prompt;
+            console.log(`\n🔥 Trend ready: "${result.trend}" - will inject on next turn`);
+            
+            // Interrupt current speaker to inject trend faster
+            if (this.currentSpeaker) {
+              this.currentSpeaker.interrupt();
+            }
+          }
+        }).catch(err => console.error('❌ Trend error:', err.message));
       } else if (trimmed) {
         this.userInput = trimmed;
         console.log(`\n🎤 YOU: "${trimmed}"\n`);
@@ -211,6 +228,25 @@ export class PodcastOrchestrator {
       this.agents.push(agent);
     }
 
+    // Set up trend injector with player for tweet overlays
+    const player = this.twitchStreamer || this.localPlayer;
+    if (player) {
+      this.trendInjector.setPlayer(player);
+    }
+
+    // Listen for trend ready events (from auto-fetch)
+    this.trendInjector.on('trendReady', ({ trend, prompt }) => {
+      console.log(`\n🔥 Auto-trend ready: "${trend}"`);
+      this.pendingTrendPrompt = prompt;
+    });
+
+    // Start auto-fetching trends every 5 minutes (but not at minute 0)
+    if (process.env.X_BEARER_TOKEN) {
+      this.trendInjector.startAutoFetch();
+    } else {
+      console.log('⚠️  X_BEARER_TOKEN not set - trend auto-fetch disabled');
+    }
+
     console.log("\n🎬 All agents ready!\n");
   }
 
@@ -249,6 +285,13 @@ export class PodcastOrchestrator {
       if (this.userInput) {
         preGenerated = null; // Invalidate pre-generated content
         await this.handleUserInput();
+        continue;
+      }
+
+      // Priority 3: Trending topic injection
+      if (this.pendingTrendPrompt) {
+        preGenerated = null; // Invalidate pre-generated content
+        await this.handleTrendInjection();
         continue;
       }
 
@@ -508,6 +551,47 @@ export class PodcastOrchestrator {
     );
   }
 
+  async handleTrendInjection() {
+    const prompt = this.pendingTrendPrompt;
+    this.pendingTrendPrompt = null;
+
+    console.log(`\n📊 TRENDING TOPIC INJECTION\n`);
+
+    // Add to shared history
+    this.sharedHistory.push({
+      speaker: "TRENDING",
+      content: prompt,
+    });
+
+    // Show the first tweet on overlay
+    this.trendInjector.showNextTweet().catch(err => {
+      console.error('Tweet overlay error:', err.message);
+    });
+
+    // Both agents react to the trend
+    for (let i = 0; i < this.agents.length; i++) {
+      const agent = this.agents[i];
+      
+      await this.agentSpeak(
+        agent,
+        i === 0 
+          ? `${prompt}\n\nYou just saw this trending! React to it first.`
+          : `${prompt}\n\nYour co-host just reacted. Now it's your turn - agree or argue!`
+      );
+
+      // Show next tweet while second agent speaks
+      if (i === 0 && this.trendInjector.tweetQueue.length > 0) {
+        this.trendInjector.showNextTweet().catch(() => {});
+      }
+
+      // Check for higher priority interrupts
+      if (this.newsInjector.hasBreakingNews() || this.userInput) break;
+    }
+
+    // Clear the trend after discussion
+    this.trendInjector.clearTrend();
+  }
+
   playAudio(audioBuffer) {
     if (!this.isRunning) return;
 
@@ -547,6 +631,10 @@ export class PodcastOrchestrator {
 
     for (const agent of this.agents) {
       agent.cleanup();
+    }
+
+    if (this.trendInjector) {
+      this.trendInjector.cleanup();
     }
   }
 
