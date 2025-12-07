@@ -13,6 +13,7 @@ A demo application that creates podcast-style conversations between multiple AI 
 ## Architecture
 
 This demo uses the `@livekit/agents` framework, which provides:
+
 - Automatic room management
 - Worker-based agent deployment
 - Built-in lifecycle management
@@ -26,7 +27,7 @@ This demo uses the `@livekit/agents` framework, which provides:
 
 ## Prerequisites
 
-- Node.js 18+ 
+- Node.js 18+
 - LiveKit Server (local or cloud)
 - XAI API Key ([get one here](https://x.ai))
 - ffmpeg (optional, for Twitch streaming)
@@ -59,6 +60,9 @@ XAI_API_KEY=your-xai-api-key-here
 # Podcast Configuration
 PODCAST_TOPIC=The Future of AI and Human Creativity
 PODCAST_DURATION=5
+
+# Display Options
+ENABLE_SUBTITLES=false  # Set to 'true' to show real-time subtitles on video (Twitch/Local)
 ```
 
 ## Running LiveKit Server Locally
@@ -86,6 +90,7 @@ npm run local
 ```
 
 This will:
+
 1. Start the podcast immediately
 2. Play audio directly on your computer speakers
 3. No LiveKit server required!
@@ -105,6 +110,7 @@ npm start
 ```
 
 The agent will:
+
 1. Connect to your LiveKit server
 2. Wait for a room to be created
 3. Start the podcast conversation when a participant joins
@@ -115,7 +121,7 @@ The agent will:
 You can connect to the podcast using:
 
 1. **LiveKit Web Client**: Use the LiveKit Playground or build a custom web client
-2. **LiveKit CLI**: 
+2. **LiveKit CLI**:
    ```bash
    livekit-cli join-room --url ws://localhost:7880 --room podcast-room
    ```
@@ -132,11 +138,11 @@ Or modify the agent personalities in `podcast-agent.js`:
 ```javascript
 const AGENTS = [
   {
-    name: 'YourAgent',
-    voiceId: 'ara', // Available: ara, deedee, paul
-    personality: 'Your custom personality prompt...',
-    color: '\x1b[36m'
-  }
+    name: "YourAgent",
+    voiceId: "ara", // Available: ara, deedee, paul
+    personality: "Your custom personality prompt...",
+    color: "\x1b[36m",
+  },
 ];
 ```
 
@@ -222,6 +228,7 @@ class PodcastPersonality {
 ## Contributing
 
 Contributions are welcome! Feel free to:
+
 - Add new agent personalities
 - Improve conversation flow
 - Add streaming integrations (Twitch, YouTube, etc.)
