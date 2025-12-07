@@ -27,6 +27,9 @@ export class XAITTSClonePlugin extends EventEmitter {
     // Cached voice file as base64
     this.voiceBase64 = null;
     this.initialized = false;
+
+    // Timeout for API calls (voice clone can be slower)
+    this.timeout = config.timeout || 30000; // 30s default timeout
   }
 
   /**
@@ -85,6 +88,9 @@ export class XAITTSClonePlugin extends EventEmitter {
       },
     };
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+
     try {
       const startTime = Date.now();
 
@@ -95,6 +101,7 @@ export class XAITTSClonePlugin extends EventEmitter {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(payload),
+        signal: controller.signal,
       });
 
       const apiTime = Date.now() - startTime;
@@ -120,8 +127,28 @@ export class XAITTSClonePlugin extends EventEmitter {
         `⏱️  Voice clone: API=${apiTime}ms, convert=${convertTime}ms, total=${totalTime}ms`
       );
 
+      clearTimeout(timeoutId);
       return pcmBuffer;
     } catch (error) {
+      clearTimeout(timeoutId);
+
+      // Handle timeout specifically
+      if (error.name === "AbortError") {
+        const timeoutError = new Error(
+          `Voice clone API timed out after ${this.timeout}ms`
+        );
+
+        // Retry on timeout
+        if (retries > 0) {
+          console.log(
+            `⚠️  Voice clone timeout, retrying... (${retries} retries left)`
+          );
+          await new Promise((r) => setTimeout(r, 2000));
+          return this.synthesize(text, retries - 1);
+        }
+
+        throw timeoutError;
+      }
       // Retry on transient errors
       if (retries > 0) {
         const isRetryable =

@@ -98,9 +98,8 @@ export default defineAgent({
     const topic =
       process.env.PODCAST_TOPIC ||
       "AI Surveillance, Government Coverups, and the Coming Singularity";
-    const duration = parseInt(process.env.PODCAST_DURATION || "5");
 
-    const podcast = new PodcastOrchestrator(AGENT_CONFIGS, topic, duration);
+    const podcast = new PodcastOrchestrator(AGENT_CONFIGS, topic);
     await podcast.initialize(ctx.room);
     await podcast.runPodcast();
   },
@@ -116,11 +115,9 @@ async function main() {
   const topic =
     process.env.PODCAST_TOPIC ||
     "AI Surveillance, Government Coverups, and the Coming Singularity";
-  const duration = parseInt(process.env.PODCAST_DURATION || "5");
 
   console.log("🚀 Starting AI Podcast...");
   console.log(`📝 Topic: ${topic}`);
-  console.log(`⏱️  Duration: ${duration} minutes`);
   console.log(
     `🔌 Mode: ${
       LOCAL_MODE
@@ -133,7 +130,7 @@ async function main() {
 
   if (LOCAL_MODE || process.env.TWITCH_MODE === "true") {
     // Run locally or stream to Twitch
-    const podcast = new PodcastOrchestrator(AGENT_CONFIGS, topic, duration);
+    const podcast = new PodcastOrchestrator(AGENT_CONFIGS, topic);
     await podcast.initialize(null);
     await podcast.runPodcast();
     process.exit(0);

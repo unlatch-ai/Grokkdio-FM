@@ -3,16 +3,18 @@
  * Implements the LiveKit LLM interface using XAI's API
  */
 
-import { EventEmitter } from 'events';
+import { EventEmitter } from "events";
 
 export class XAILLMPlugin extends EventEmitter {
   constructor(config = {}) {
     super();
     this.apiKey = config.apiKey || process.env.XAI_API_KEY;
-    this.baseUrl = config.baseUrl || process.env.XAI_BASE_URL || 'https://api.x.ai/v1';
-    this.model = config.model || 'grok-3';
+    this.baseUrl =
+      config.baseUrl || process.env.XAI_BASE_URL || "https://api.x.ai/v1";
+    this.model = config.model || "grok-3";
     this.temperature = config.temperature || 0.7;
     this.maxTokens = config.maxTokens || 1024;
+    this.timeout = config.timeout || 20000; // 20s default timeout
   }
 
   /**
@@ -22,28 +24,44 @@ export class XAILLMPlugin extends EventEmitter {
    * @returns {Promise<string>} - The generated response
    */
   async chat(messages, options = {}) {
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        messages: messages,
-        temperature: options.temperature || this.temperature,
-        max_tokens: options.maxTokens || this.maxTokens,
-        stream: false,
-      }),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      options.timeout || this.timeout
+    );
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`XAI API error: ${response.status} - ${error}`);
+    try {
+      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages: messages,
+          temperature: options.temperature || this.temperature,
+          max_tokens: options.maxTokens || this.maxTokens,
+          stream: false,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`XAI API error: ${response.status} - ${error}`);
+      }
+
+      const data = await response.json();
+      return data.choices[0].message.content;
+    } catch (err) {
+      if (err.name === "AbortError") {
+        throw new Error(`XAI LLM request timed out after ${this.timeout}ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const data = await response.json();
-    return data.choices[0].message.content;
   }
 
   /**
@@ -53,29 +71,47 @@ export class XAILLMPlugin extends EventEmitter {
    * @returns {AsyncGenerator<string>} - Stream of text chunks
    */
   async *streamChat(messages, options = {}) {
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        messages: messages,
-        temperature: options.temperature || this.temperature,
-        max_tokens: options.maxTokens || this.maxTokens,
-        stream: true,
-      }),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      options.timeout || this.timeout
+    );
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`XAI API error: ${response.status} - ${error}`);
+    let response;
+    try {
+      response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages: messages,
+          temperature: options.temperature || this.temperature,
+          max_tokens: options.maxTokens || this.maxTokens,
+          stream: true,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`XAI API error: ${response.status} - ${error}`);
+      }
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err.name === "AbortError") {
+        throw new Error(
+          `XAI LLM stream request timed out after ${this.timeout}ms`
+        );
+      }
+      throw err;
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = '';
+    let buffer = "";
 
     try {
       while (true) {
@@ -83,13 +119,13 @@ export class XAILLMPlugin extends EventEmitter {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
 
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
+          if (line.startsWith("data: ")) {
             const data = line.slice(6);
-            if (data === '[DONE]') continue;
+            if (data === "[DONE]") continue;
 
             try {
               const parsed = JSON.parse(data);
@@ -98,12 +134,13 @@ export class XAILLMPlugin extends EventEmitter {
                 yield content;
               }
             } catch (e) {
-              console.warn('Failed to parse SSE data:', e);
+              console.warn("Failed to parse SSE data:", e);
             }
           }
         }
       }
     } finally {
+      clearTimeout(timeoutId);
       reader.releaseLock();
     }
   }
@@ -116,41 +153,59 @@ export class XAILLMPlugin extends EventEmitter {
    * @returns {Promise<Object>} - Function call or text response
    */
   async chatWithFunctions(messages, functions, options = {}) {
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        messages: messages,
-        functions: functions,
-        temperature: options.temperature || this.temperature,
-        max_tokens: options.maxTokens || this.maxTokens,
-      }),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      options.timeout || this.timeout
+    );
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`XAI API error: ${response.status} - ${error}`);
-    }
+    try {
+      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages: messages,
+          functions: functions,
+          temperature: options.temperature || this.temperature,
+          max_tokens: options.maxTokens || this.maxTokens,
+        }),
+        signal: controller.signal,
+      });
 
-    const data = await response.json();
-    const choice = data.choices[0];
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`XAI API error: ${response.status} - ${error}`);
+      }
 
-    if (choice.message.function_call) {
+      const data = await response.json();
+      const choice = data.choices[0];
+
+      if (choice.message.function_call) {
+        return {
+          type: "function_call",
+          name: choice.message.function_call.name,
+          arguments: JSON.parse(choice.message.function_call.arguments),
+        };
+      }
+
       return {
-        type: 'function_call',
-        name: choice.message.function_call.name,
-        arguments: JSON.parse(choice.message.function_call.arguments),
+        type: "text",
+        content: choice.message.content,
       };
+    } catch (err) {
+      if (err.name === "AbortError") {
+        throw new Error(
+          `XAI LLM function call timed out after ${this.timeout}ms`
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    return {
-      type: 'text',
-      content: choice.message.content,
-    };
   }
 }
 
