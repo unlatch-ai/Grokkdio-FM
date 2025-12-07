@@ -1,2 +1,9 @@
 .DS_Store
 **/.DS_Store
+
+# Large media files
+*.mp4
+*.mov
+*.avi
+*.mkv
+livekit-test/media/
