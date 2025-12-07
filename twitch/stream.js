@@ -7,7 +7,7 @@ const path = require('path');
 const { ensureHelloAudioFile } = require('./xaiHelloAudio');
 
 // === CONFIGURATION ===
-const TWITCH_STREAM_KEY = ''; // Get from https://dashboard.twitch.tv/settings/stream
+const TWITCH_STREAM_KEY = 'live_1402615018_HK2xagFGHN8u4mCGGIWWWk2bJHj1VV'; // Get from https://dashboard.twitch.tv/settings/stream
 const TWITCH_RTMP_URL = 'rtmp://live.twitch.tv/app/';
 
 // Audio settings
